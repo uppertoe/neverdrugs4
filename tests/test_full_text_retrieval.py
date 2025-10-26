@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models import ArticleArtefact, SearchTerm
+from app.models import ArticleArtefact, ArticleSnippet, SearchTerm
 from app.services.full_text import (
     FullTextSelectionPolicy,
     NIHFullTextFetcher,
@@ -43,10 +43,50 @@ class _FixtureHttpClient:
     def get(self, url: str, params: dict[str, str]) -> _StubHttpResponse:
         key = (params.get("db"), params.get("id"))
         self.calls.append(params)
-        if key not in self._mapping:
-            raise AssertionError(f"Unexpected NIH request {key}")
-        response = self._mapping[key]
-        return _StubHttpResponse(response.text, response.status_code)
+        if key in self._mapping:
+            response = self._mapping[key]
+            return _StubHttpResponse(response.text, response.status_code)
+
+        db, ids = key
+        if db == "pmc" and ids and "," in ids:
+            from copy import deepcopy
+            from xml.etree import ElementTree
+
+            aggregate_root = ElementTree.Element("pmc-articleset")
+            for single_id in ids.split(","):
+                single_key = (db, single_id)
+                if single_key not in self._mapping:
+                    raise AssertionError(f"Unexpected NIH request {single_key}")
+                source = self._mapping[single_key]
+                article_root = ElementTree.fromstring(source.text)
+                article = article_root.find("article")
+                if article is None:
+                    raise AssertionError(f"PMC fixture missing article node for {single_id}")
+                aggregate_root.append(deepcopy(article))
+
+            payload = ElementTree.tostring(aggregate_root, encoding="unicode")
+            return _StubHttpResponse(payload)
+
+        if db == "pubmed" and ids and "," in ids:
+            from copy import deepcopy
+            from xml.etree import ElementTree
+
+            aggregate_root = ElementTree.Element("PubmedArticleSet")
+            for single_id in ids.split(","):
+                single_key = (db, single_id)
+                if single_key not in self._mapping:
+                    raise AssertionError(f"Unexpected NIH request {single_key}")
+                source = self._mapping[single_key]
+                article_root = ElementTree.fromstring(source.text)
+                article = article_root.find("PubmedArticle")
+                if article is None:
+                    raise AssertionError(f"PubMed fixture missing article node for {single_id}")
+                aggregate_root.append(deepcopy(article))
+
+            payload = ElementTree.tostring(aggregate_root, encoding="unicode")
+            return _StubHttpResponse(payload)
+
+        raise AssertionError(f"Unexpected NIH request {key}")
 
 
 def _make_article(
@@ -228,16 +268,23 @@ def test_collect_pubmed_articles_persists_metadata_and_full_text(session) -> Non
             ("pubmed", "23919455"): _StubHttpResponse(
                 (FIXTURES / "pubmed_abstract_23919455.xml").read_text(encoding="utf-8")
             ),
+                ("pubmed", "15859443"): _StubHttpResponse(
+                    (FIXTURES / "pubmed_abstract_15859443.xml").read_text(encoding="utf-8")
+                ),
+            ("pmc", "PMC2526213"): _StubHttpResponse(
+                (FIXTURES / "pmc_full_text_PMC2526213.xml").read_text(encoding="utf-8")
+            ),
         }
     )
     full_text_fetcher = NIHFullTextFetcher(http_client=fixture_http_client)
 
     selection_policy = FullTextSelectionPolicy(
-        base_full_text=2,
-        max_full_text=2,
-        max_token_budget=10_000,
+        base_full_text=3,
+        max_full_text=3,
+        max_token_budget=15_000,
         estimated_tokens_per_full_text=4_000,
         bonus_score_threshold=1.0,
+        prefer_pmc=False,
     )
 
     resolution = SearchResolution(
@@ -272,8 +319,20 @@ def test_collect_pubmed_articles_persists_metadata_and_full_text(session) -> Non
 
     third = stored[2]
     assert third.pmid == "15859443"
-    assert third.content is None
-    assert third.content_source is None
+    assert third.content_source in {"pmc-full-text", "pubmed-abstract"}
+    assert third.content
+    assert "propofol" in third.content.lower()
     assert third.citation["score"] == pytest.approx(1.1)
-    assert fixture_http_client.calls[0]["id"] == "PMC11623016"
-    assert fixture_http_client.calls[1]["id"] == "23919455"
+    assert fixture_http_client.calls[0]["db"] == "pmc"
+    assert "PMC11623016" in fixture_http_client.calls[0]["id"]
+    assert fixture_http_client.calls[1]["db"] == "pubmed"
+    assert fixture_http_client.calls[1]["id"] == "23919455,15859443"
+
+    snippet_rows = session.query(ArticleSnippet).order_by(ArticleSnippet.id).all()
+    assert len(snippet_rows) >= 2
+    risk_snippet = next(snippet for snippet in snippet_rows if snippet.drug == "succinylcholine")
+    assert risk_snippet.classification == "risk"
+    assert "succinylcholine" in risk_snippet.snippet_text.lower()
+    propofol_snippet = next(snippet for snippet in snippet_rows if snippet.drug == "propofol")
+    assert "propofol" in propofol_snippet.snippet_text.lower()
+    assert "no complications" in propofol_snippet.snippet_text.lower()

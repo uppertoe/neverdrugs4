@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Sequence
+from typing import Callable, Dict, Optional, Sequence
 from xml.etree import ElementTree
 
 import httpx
@@ -18,6 +18,12 @@ from app.services.nih_pubmed import (
     PubMedArticle,
 )
 from app.services.search import SearchResolution
+from app.services.snippets import (
+    ArticleSnippetExtractor,
+    SnippetCandidate,
+    persist_snippet_candidates,
+    select_top_snippets,
+)
 
 
 @dataclass(slots=True)
@@ -230,6 +236,8 @@ def collect_pubmed_articles(
     pubmed_searcher: NIHPubMedSearcher,
     full_text_fetcher: NIHFullTextFetcher,
     selection_policy: FullTextSelectionPolicy | None = None,
+    snippet_extractor: ArticleSnippetExtractor | None = None,
+    snippet_selector: Callable[[Sequence[SnippetCandidate]], list[SnippetCandidate]] | None = None,
 ) -> list[ArticleArtefact]:
     policy = selection_policy or FullTextSelectionPolicy()
     search_result = pubmed_searcher(search_resolution.mesh_terms)
@@ -242,12 +250,55 @@ def collect_pubmed_articles(
         except RuntimeError:
             contents = {}
 
-    return persist_pubmed_articles(
+    persisted_articles = persist_pubmed_articles(
         session,
         search_term_id=search_resolution.search_term_id,
         articles=search_result.articles,
         contents=contents,
     )
+
+    extractor = snippet_extractor or ArticleSnippetExtractor()
+    condition_terms = list(search_resolution.mesh_terms)
+    if search_resolution.normalized_condition:
+        condition_terms.append(search_resolution.normalized_condition)
+
+    snippet_candidates: list[SnippetCandidate] = []
+    for artefact in persisted_articles:
+        content = contents.get(artefact.pmid)
+        text = content.text if content is not None else artefact.content
+        if not text:
+            continue
+        citation = artefact.citation or {}
+        preferred_url = citation.get("preferred_url") if isinstance(citation, dict) else None
+        if not preferred_url:
+            preferred_url = f"https://pubmed.ncbi.nlm.nih.gov/{artefact.pmid}/"
+        pmc_ref_count_val = citation.get("pmc_ref_count") if isinstance(citation, dict) else None
+        try:
+            pmc_ref_count = int(pmc_ref_count_val) if pmc_ref_count_val is not None else 0
+        except (TypeError, ValueError):
+            pmc_ref_count = 0
+
+        extracted = extractor.extract_snippets(
+            article_text=text,
+            pmid=artefact.pmid,
+            condition_terms=condition_terms,
+            article_rank=artefact.rank,
+            article_score=artefact.score,
+            preferred_url=preferred_url,
+            pmc_ref_count=pmc_ref_count,
+        )
+        snippet_candidates.extend(extracted)
+
+    if snippet_candidates:
+        selector = snippet_selector or select_top_snippets
+        selected_snippets = selector(snippet_candidates)
+        persist_snippet_candidates(
+            session,
+            article_artefacts=persisted_articles,
+            snippet_candidates=selected_snippets,
+        )
+
+    return persisted_articles
 
 
 def persist_pubmed_articles(

@@ -88,5 +88,33 @@ class ArticleArtefact(Base):
     )
 
     term: Mapped[SearchTerm] = relationship(back_populates="articles")
+    snippets: Mapped[List["ArticleSnippet"]] = relationship(
+        back_populates="article",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     __table_args__ = (UniqueConstraint("search_term_id", "pmid", name="uq_article_searchterm_pmid"),)
+
+
+class ArticleSnippet(Base):
+    __tablename__ = "article_snippets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    article_artefact_id: Mapped[int] = mapped_column(ForeignKey("article_artefacts.id"), index=True, nullable=False)
+    snippet_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    drug: Mapped[str] = mapped_column(String(128), nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    snippet_text: Mapped[str] = mapped_column(Text, nullable=False)
+    snippet_score: Mapped[float] = mapped_column(Float, nullable=False)
+    cues: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    article: Mapped[ArticleArtefact] = relationship(back_populates="snippets")
+
+    __table_args__ = (
+        UniqueConstraint("article_artefact_id", "snippet_hash", name="uq_snippet_article_hash"),
+    )

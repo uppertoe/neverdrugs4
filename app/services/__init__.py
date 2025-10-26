@@ -1,4 +1,10 @@
 from .full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
+from .snippets import (
+    ArticleSnippetExtractor,
+    SnippetCandidate,
+    persist_snippet_candidates,
+    select_top_snippets,
+)
 from .mesh_builder import NIHMeshBuilder
 from .nih_pipeline import resolve_condition_via_nih
 from .nih_pubmed import NIHPubMedSearcher, PubMedArticle, PubMedSearchResult
@@ -9,11 +15,15 @@ __all__ = [
     "NIHMeshBuilder",
     "NIHPubMedSearcher",
     "NIHFullTextFetcher",
+    "ArticleSnippetExtractor",
     "MeshBuildResult",
     "PubMedArticle",
     "PubMedSearchResult",
     "SearchResolution",
     "collect_pubmed_articles",
+    "SnippetCandidate",
+    "persist_snippet_candidates",
+    "select_top_snippets",
     "resolve_condition_via_nih",
     "resolve_search_input",
 ]

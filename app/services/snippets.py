@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass
+from typing import Iterable, Literal, Sequence
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models import ArticleArtefact, ArticleSnippet
+from app.services.query_terms import DRUG_TEXT_TERMS
+
+DEFAULT_RISK_CUES: tuple[str, ...] = (
+    "avoid",
+    "avoided",
+    "contraindicated",
+    "should not",
+    "do not use",
+    "risk",
+    "danger",
+    "caution",
+    "hyperkalemia",
+    "malignant hyperthermia",
+    "cardiac arrest",
+    "rhabdomyolysis",
+    "adverse",
+    "toxic",
+)
+DEFAULT_SAFETY_CUES: tuple[str, ...] = (
+    "safe",
+    "safely",
+    "well tolerated",
+    "no complications",
+    "without complications",
+    "recommended",
+    "effective",
+    "successfully",
+    "beneficial",
+)
+DEFAULT_WINDOW_CHARS = 600
+_MIN_SNIPPET_CHARS = 60
+
+
+@dataclass(slots=True)
+class SnippetCandidate:
+    pmid: str
+    drug: str
+    classification: Literal["risk", "safety"]
+    snippet_text: str
+    article_rank: int
+    article_score: float
+    preferred_url: str
+    pmc_ref_count: int
+    snippet_score: float
+    cues: list[str]
+
+
+class ArticleSnippetExtractor:
+    def __init__(
+        self,
+        *,
+        drug_terms: Iterable[str] = DRUG_TEXT_TERMS,
+        risk_cues: Sequence[str] = DEFAULT_RISK_CUES,
+        safety_cues: Sequence[str] = DEFAULT_SAFETY_CUES,
+        window_chars: int = DEFAULT_WINDOW_CHARS,
+    ) -> None:
+        self.drug_terms = tuple(sorted({term.lower() for term in drug_terms if term}))
+        self.risk_cues = tuple(cue.lower() for cue in risk_cues)
+        self.safety_cues = tuple(cue.lower() for cue in safety_cues)
+        self.window_chars = max(100, window_chars)
+
+    def extract_snippets(
+        self,
+        *,
+        article_text: str,
+        pmid: str,
+        condition_terms: Sequence[str],
+        article_rank: int,
+        article_score: float,
+        preferred_url: str,
+        pmc_ref_count: int,
+    ) -> list[SnippetCandidate]:
+        if not article_text:
+            return []
+
+        normalized_text = _normalize_whitespace(article_text)
+        lower_text = normalized_text.lower()
+        condition_aliases = [term.lower() for term in condition_terms if term]
+        if not condition_aliases:
+            return []
+
+        # Only enforce condition matching when the article actually references one of the aliases.
+        require_condition = any(alias in lower_text for alias in condition_aliases)
+
+        seen_keys: set[tuple[str, str]] = set()
+        candidates: list[SnippetCandidate] = []
+
+        for drug in self.drug_terms:
+            pattern = re.compile(rf"\b{re.escape(drug)}\b")
+            for match in pattern.finditer(lower_text):
+                snippet = self._build_window(normalized_text, match.start(), match.end())
+                if len(snippet) < _MIN_SNIPPET_CHARS:
+                    continue
+                snippet_lower = snippet.lower()
+                if require_condition and not any(alias in snippet_lower for alias in condition_aliases):
+                    continue
+                classification, cues = self._classify(snippet_lower, drug)
+                if classification is None:
+                    continue
+
+                key = (drug, snippet_lower)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                snippet_score = self._score_snippet(
+                    article_score=article_score,
+                    pmc_ref_count=pmc_ref_count,
+                    classification=classification,
+                    cue_count=len(cues),
+                )
+
+                candidates.append(
+                    SnippetCandidate(
+                        pmid=pmid,
+                        drug=drug,
+                        classification=classification,
+                        snippet_text=snippet,
+                        article_rank=article_rank,
+                        article_score=article_score,
+                        preferred_url=preferred_url,
+                        pmc_ref_count=pmc_ref_count,
+                        snippet_score=snippet_score,
+                        cues=list(cues),
+                    )
+                )
+
+        candidates.sort(key=lambda item: (item.article_rank, -item.snippet_score))
+        return candidates
+
+    def _build_window(self, text: str, start: int, end: int) -> str:
+        left = max(0, start - self.window_chars)
+        right = min(len(text), end + self.window_chars)
+        snippet = text[left:right]
+        snippet = snippet.strip()
+
+        # Attempt to trim to sentence boundaries for readability
+        period_left = snippet.find(". ")
+        if period_left != -1 and period_left < self.window_chars // 2:
+            snippet = snippet[period_left + 2 :]
+        period_right = snippet.rfind(". ")
+        if period_right != -1 and len(snippet) - period_right > self.window_chars // 2:
+            snippet = snippet[: period_right + 1]
+        return snippet
+
+    def _classify(self, snippet_lower: str, drug: str) -> tuple[str | None, tuple[str, ...]]:
+        risk_hits = tuple(cue for cue in self.risk_cues if cue in snippet_lower)
+        safety_hits = tuple(cue for cue in self.safety_cues if cue in snippet_lower)
+
+        alt_phrase = f"alternative to {drug}"
+        if alt_phrase in snippet_lower and alt_phrase not in risk_hits:
+            risk_hits = risk_hits + (alt_phrase,)
+
+        if not risk_hits and not safety_hits:
+            return None, ()
+
+        if risk_hits and not safety_hits:
+            return "risk", risk_hits
+
+        if safety_hits and not risk_hits:
+            return "safety", safety_hits
+
+        # If both risk and safety cues are present, prioritise risk for caution
+        return "risk", risk_hits + safety_hits
+
+    def _score_snippet(
+        self,
+        *,
+        article_score: float,
+        pmc_ref_count: int,
+        classification: Literal["risk", "safety"],
+        cue_count: int,
+    ) -> float:
+        score = article_score
+        score += min(pmc_ref_count / 40.0, 2.0)
+        score += 0.5 if classification == "risk" else 0.3
+        score += 0.1 * cue_count
+        return round(score, 4)
+
+
+def select_top_snippets(
+    candidates: Sequence[SnippetCandidate],
+    *,
+    base_quota: int = 2,
+    max_quota: int = 5,
+) -> list[SnippetCandidate]:
+    if not candidates:
+        return []
+
+    grouped: dict[str, list[SnippetCandidate]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.pmid, []).append(candidate)
+
+    selected: list[SnippetCandidate] = []
+    for pmid, items in grouped.items():
+        items_sorted = sorted(items, key=lambda s: s.snippet_score, reverse=True)
+        quota = _compute_quota(items_sorted[0], base_quota=base_quota, max_quota=max_quota)
+        selected.extend(items_sorted[:quota])
+
+    # Order by article rank, then snippet score descending
+    selected.sort(key=lambda s: (s.article_rank, -s.snippet_score))
+    return selected
+
+
+def _compute_quota(
+    candidate: SnippetCandidate,
+    *,
+    base_quota: int,
+    max_quota: int,
+) -> int:
+    quota = base_quota
+    if candidate.pmc_ref_count >= 10:
+        quota += 1
+    if candidate.pmc_ref_count >= 30:
+        quota += 1
+    if candidate.article_score >= 4.0:
+        quota += 1
+    return min(max_quota, quota)
+
+
+def _normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())
+
+
+def persist_snippet_candidates(
+    session: Session,
+    *,
+    article_artefacts: Sequence[ArticleArtefact],
+    snippet_candidates: Sequence[SnippetCandidate],
+) -> list[ArticleSnippet]:
+    if not snippet_candidates:
+        return []
+
+    artefact_by_pmid = {artefact.pmid: artefact for artefact in article_artefacts}
+    persisted: list[ArticleSnippet] = []
+
+    for candidate in snippet_candidates:
+        artefact = artefact_by_pmid.get(candidate.pmid)
+        if artefact is None:
+            continue
+
+        snippet_hash = _compute_snippet_hash(candidate.snippet_text)
+        stmt = select(ArticleSnippet).where(
+            ArticleSnippet.article_artefact_id == artefact.id,
+            ArticleSnippet.snippet_hash == snippet_hash,
+        )
+        existing = session.execute(stmt).scalar_one_or_none()
+
+        if existing is None:
+            snippet = ArticleSnippet(
+                article_artefact_id=artefact.id,
+                snippet_hash=snippet_hash,
+                drug=candidate.drug,
+                classification=candidate.classification,
+                snippet_text=candidate.snippet_text,
+                snippet_score=candidate.snippet_score,
+                cues=list(candidate.cues),
+            )
+            session.add(snippet)
+            persisted.append(snippet)
+            continue
+
+        existing.drug = candidate.drug
+        existing.classification = candidate.classification
+        existing.snippet_text = candidate.snippet_text
+        existing.snippet_score = candidate.snippet_score
+        existing.cues = list(candidate.cues)
+        persisted.append(existing)
+
+    session.flush()
+    return persisted
+
+
+def _compute_snippet_hash(snippet_text: str) -> str:
+    normalized = _normalize_whitespace(snippet_text).lower().encode("utf-8")
+    return hashlib.sha1(normalized).hexdigest()
