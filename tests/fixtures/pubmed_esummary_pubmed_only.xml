@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE eSummaryResult PUBLIC "-//NLM//DTD esummary v1 20041029//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20041029/esummary-v1.dtd">
+<eSummaryResult>
+    <DocSum>
+        <Id>55555</Id>
+        <Item Name="Title" Type="String">Sample article without DOI or PMC</Item>
+        <Item Name="Source" Type="String">Another Journal</Item>
+        <Item Name="PubDate" Type="Date">2018 Mar</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Solo C</Item>
+        </Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">55555</Item>
+        </Item>
+        <Item Name="HasAbstract" Type="Integer">0</Item>
+    </DocSum>
+</eSummaryResult>

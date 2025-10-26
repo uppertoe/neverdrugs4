@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE eSearchResult PUBLIC "-//NLM//DTD esearch 20060628//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20060628/esearch.dtd">
+<eSearchResult>
+    <Count>152</Count>
+    <RetMax>20</RetMax>
+    <RetStart>0</RetStart>
+    <IdList>
+        <Id>39503119</Id>
+        <Id>20228183</Id>
+        <Id>26070283</Id>
+        <Id>23919455</Id>
+        <Id>30554118</Id>
+        <Id>39480679</Id>
+        <Id>38730494</Id>
+        <Id>30912308</Id>
+        <Id>27621596</Id>
+        <Id>37482906</Id>
+        <Id>30064893</Id>
+        <Id>40396417</Id>
+        <Id>32331988</Id>
+        <Id>39362116</Id>
+        <Id>16430404</Id>
+        <Id>27834844</Id>
+        <Id>23746543</Id>
+        <Id>25843299</Id>
+        <Id>26642076</Id>
+        <Id>39618072</Id>
+    </IdList>
+    <TranslationSet/>
+    <QueryTranslation>"muscular dystrophy, duchenne"[MeSH Terms] AND ("Anesthesia"[MeSH Terms] OR "anesthesia, general"[MeSH Terms] OR "anesthesia, conduction"[MeSH Terms] OR "Anesthetics"[MeSH Terms] OR "Anesthesiology"[MeSH Terms] OR "Analgesia"[MeSH Terms] OR "analgesia, epidural"[MeSH Terms] OR "Conscious Sedation"[MeSH Terms] OR "monitoring, intraoperative"[MeSH Terms] OR "pain, postoperative"[MeSH Terms] OR ("Anesthesia"[Title/Abstract] OR "anaesthesia"[Title/Abstract] OR "anesthetic"[Title/Abstract] OR "Anesthetics"[Title/Abstract] OR "sedation"[Title/Abstract] OR "Conscious Sedation"[Title/Abstract] OR "regional anesthesia"[Title/Abstract] OR "nerve block"[Title/Abstract] OR "perioperative"[Title/Abstract] OR "induction of anesthesia"[Title/Abstract] OR "general anesthesia"[Title/Abstract] OR "postoperative pain"[Title/Abstract]) OR ("anesthetics, intravenous"[MeSH Terms] OR "anesthetics, local"[MeSH Terms] OR "anesthetics, inhalation"[MeSH Terms] OR "analgesics, opioid"[MeSH Terms] OR "analgesics, non narcotic"[MeSH Terms] OR "Neuromuscular Blocking Agents"[MeSH Terms] OR "Hypnotics and Sedatives"[MeSH Terms] OR ("propofol"[Title/Abstract] OR "ketamine"[Title/Abstract] OR "midazolam"[Title/Abstract] OR "fentanyl"[Title/Abstract] OR "remifentanil"[Title/Abstract] OR "dexmedetomidine"[Title/Abstract] OR "sevoflurane"[Title/Abstract] OR "isoflurane"[Title/Abstract] OR "desflurane"[Title/Abstract] OR "rocuronium"[Title/Abstract] OR "succinylcholine"[Title/Abstract] OR "bupivacaine"[Title/Abstract] OR "lidocaine"[Title/Abstract])))</QueryTranslation>
+    <WarningList>
+        <QuotedPhraseNotFound>"Duchenne Muscular Dystrophy"[MeSH Terms]</QuotedPhraseNotFound>
+        <QuotedPhraseNotFound>"Duchenne-Type Progressive Muscular Dystrophy"[MeSH Terms]</QuotedPhraseNotFound>
+        <QuotedPhraseNotFound>"Progressive Muscular Dystrophy, Duchenne Type"[MeSH Terms]</QuotedPhraseNotFound>
+    </WarningList>
+</eSearchResult>

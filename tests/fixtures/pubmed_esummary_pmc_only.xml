@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE eSummaryResult PUBLIC "-//NLM//DTD esummary v1 20041029//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20041029/esummary-v1.dtd">
+<eSummaryResult>
+    <DocSum>
+        <Id>12345</Id>
+        <Item Name="Title" Type="String">Sample article with PMC only</Item>
+        <Item Name="Source" Type="String">Test Journal</Item>
+        <Item Name="PubDate" Type="Date">2020 Jan</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">First A</Item>
+            <Item Name="Author" Type="String">Second B</Item>
+        </Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">12345</Item>
+            <Item Name="pmc" Type="String">PMC9999999</Item>
+        </Item>
+        <Item Name="HasAbstract" Type="Integer">1</Item>
+    </DocSum>
+</eSummaryResult>

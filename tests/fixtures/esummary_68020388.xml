@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE eSummaryResult PUBLIC "-//NLM//DTD esummary v1 20041029//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20041029/esummary-v1.dtd">
+<eSummaryResult>
+    <DocSum>
+        <Id>68020388</Id>
+        <Item Name="DS_YearIntroduced" Type="String">2000</Item>
+        <Item Name="DS_ScopeNote" Type="String">An X-linked recessive muscle disease caused by an inability to synthesize DYSTROPHIN, which is involved with maintaining the integrity of the sarcolemma. Muscle fibers undergo a process that features degeneration and regeneration. Clinical manifestations include proximal weakness in the first few years of life, pseudohypertrophy, cardiomyopathy (see MYOCARDIAL DISEASES), and an increased incidence of impaired mentation. Becker muscular dystrophy is a closely related condition featuring a later onset of disease (usually adolescence) and a slowly progressive course. (Adams et al., Principles of Neurology, 6th ed, p1415)</Item>
+        <Item Name="DS_RegistryNumber" Type="String"></Item>
+        <Item Name="DS_HeadingMappedTo" Type="String"></Item>
+        <Item Name="DS_MeshTerms" Type="List">
+            <Item Name="string" Type="String">Muscular Dystrophy, Duchenne</Item>
+            <Item Name="string" Type="String">Cardiomyopathy, Dilated, 3B</Item>
+            <Item Name="string" Type="String">Cardiomyopathy, Dilated, X-Linked</Item>
+            <Item Name="string" Type="String">Childhood Muscular Dystrophy, Pseudohypertrophic</Item>
+            <Item Name="string" Type="String">Childhood Pseudohypertrophic Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Duchenne Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Duchenne-Type Progressive Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Duchenne Type Progressive Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Childhood, Pseudohypertrophic</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Duchenne Type</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Pseudohypertrophic</Item>
+            <Item Name="string" Type="String">Pseudohypertrophic Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Pseudohypertrophic Progressive, Duchenne Type</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Pseudohypertrophic, Childhood</Item>
+            <Item Name="string" Type="String">Progressive Muscular Dystrophy, Duchenne Type</Item>
+            <Item Name="string" Type="String">Pseudohypertrophic Childhood Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Pseudohypertrophic Muscular Dystrophy, Childhood</Item>
+            <Item Name="string" Type="String">Becker Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Becker's Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Becker's</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy Pseudohypertrophic Progressive, Becker Type</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Becker</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Becker Type</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Pseudohypertrophic Progressive, Becker Type</Item>
+            <Item Name="string" Type="String">Duchenne and Becker Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Duchenne-Becker Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Duchenne Becker Muscular Dystrophy</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Duchenne-Becker</Item>
+            <Item Name="string" Type="String">Muscular Dystrophy, Duchenne and Becker Types</Item>
+        </Item>
+        <Item Name="DS_Subheading" Type="List">
+            <Item Name="string" Type="String">blood</Item>
+            <Item Name="string" Type="String">cerebrospinal fluid</Item>
+            <Item Name="string" Type="String">chemically induced</Item>
+            <Item Name="string" Type="String">classification</Item>
+            <Item Name="string" Type="String">complications</Item>
+            <Item Name="string" Type="String">congenital</Item>
+            <Item Name="string" Type="String">diagnosis</Item>
+            <Item Name="string" Type="String">diagnostic imaging</Item>
+            <Item Name="string" Type="String">diet therapy</Item>
+            <Item Name="string" Type="String">drug therapy</Item>
+            <Item Name="string" Type="String">economics</Item>
+            <Item Name="string" Type="String">embryology</Item>
+            <Item Name="string" Type="String">enzymology</Item>
+            <Item Name="string" Type="String">epidemiology</Item>
+            <Item Name="string" Type="String">ethnology</Item>
+            <Item Name="string" Type="String">etiology</Item>
+            <Item Name="string" Type="String">genetics</Item>
+            <Item Name="string" Type="String">history</Item>
+            <Item Name="string" Type="String">immunology</Item>
+            <Item Name="string" Type="String">metabolism</Item>
+            <Item Name="string" Type="String">microbiology</Item>
+            <Item Name="string" Type="String">mortality</Item>
+            <Item Name="string" Type="String">nursing</Item>
+            <Item Name="string" Type="String">parasitology</Item>
+            <Item Name="string" Type="String">pathology</Item>
+            <Item Name="string" Type="String">physiopathology</Item>
+            <Item Name="string" Type="String">prevention and control</Item>
+            <Item Name="string" Type="String">psychology</Item>
+            <Item Name="string" Type="String">radiotherapy</Item>
+            <Item Name="string" Type="String">rehabilitation</Item>
+            <Item Name="string" Type="String">surgery</Item>
+            <Item Name="string" Type="String">therapy</Item>
+            <Item Name="string" Type="String">urine</Item>
+            <Item Name="string" Type="String">virology</Item>
+        </Item>
+        <Item Name="DS_PaPx" Type="List"></Item>
+        <Item Name="DS_PreviousIndexing" Type="List">
+            <Item Name="string" Type="String">Muscular Dystrophies (1966-1999)</Item>
+        </Item>
+        <Item Name="DS_SeeRelated" Type="List">
+            <Item Name="int" Type="Integer">68016189</Item>
+        </Item>
+        <Item Name="DS_PaList" Type="List"></Item>
+        <Item Name="DS_IdxLinks" Type="List">
+            <Item Name="LinksType" Type="Structure">
+                <Item Name="Parent" Type="Integer">68009136</Item>
+                <Item Name="TreeNum" Type="String">C05.651.534.500.300</Item>
+                <Item Name="Children" Type="List"></Item>
+            </Item>
+            <Item Name="LinksType" Type="Structure">
+                <Item Name="Parent" Type="Integer">68009136</Item>
+                <Item Name="TreeNum" Type="String">C10.668.491.175.500.300</Item>
+                <Item Name="Children" Type="List"></Item>
+            </Item>
+            <Item Name="LinksType" Type="Structure">
+                <Item Name="Parent" Type="Integer">68040181</Item>
+                <Item Name="TreeNum" Type="String">C16.320.322.562</Item>
+                <Item Name="Children" Type="List"></Item>
+            </Item>
+            <Item Name="LinksType" Type="Structure">
+                <Item Name="Parent" Type="Integer">68009136</Item>
+                <Item Name="TreeNum" Type="String">C16.320.577.300</Item>
+                <Item Name="Children" Type="List"></Item>
+            </Item>
+        </Item>
+        <Item Name="DS_EntryDate" Type="Date">1999/11/08 00:00</Item>
+        <Item Name="DS_RevisionDate" Type="Date">2013/07/08 00:00</Item>
+        <Item Name="DS_HeadingMappedToList" Type="List"></Item>
+    </DocSum>
+</eSummaryResult>

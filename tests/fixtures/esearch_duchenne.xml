@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE eSearchResult PUBLIC "-//NLM//DTD esearch 20060628//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20060628/esearch.dtd">
+<eSearchResult>
+    <Count>2</Count>
+    <RetMax>2</RetMax>
+    <RetStart>0</RetStart>
+    <IdList>
+        <Id>68020388</Id>
+        <Id>67030635</Id>
+    </IdList>
+    <TranslationSet>
+        <Translation>
+            <From>Duchenne muscular dystrophy</From>
+            <To>&quot;muscular dystrophy, duchenne&quot;[MeSH Terms] OR Duchenne muscular dystrophy[Text Word]</To>
+        </Translation>
+    </TranslationSet>
+    <TranslationStack>
+        <TermSet>
+            <Term>&quot;muscular dystrophy, duchenne&quot;[MeSH Terms]</Term>
+            <Field>MeSH Terms</Field>
+            <Count>1</Count>
+            <Explode>N</Explode>
+        </TermSet>
+        <TermSet>
+            <Term>Duchenne muscular dystrophy[Text Word]</Term>
+            <Field>Text Word</Field>
+            <Count>2</Count>
+            <Explode>N</Explode>
+        </TermSet>
+        <OP>OR</OP>
+        <OP>GROUP</OP>
+    </TranslationStack>
+    <QueryTranslation>&quot;muscular dystrophy, duchenne&quot;[MeSH Terms] OR Duchenne muscular dystrophy[Text Word]</QueryTranslation>
+</eSearchResult>

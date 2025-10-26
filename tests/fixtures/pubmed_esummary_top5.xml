@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE eSummaryResult PUBLIC "-//NLM//DTD esummary v1 20041029//EN" "https://eutils.ncbi.nlm.nih.gov/eutils/dtd/20041029/esummary-v1.dtd">
+<eSummaryResult>
+    <DocSum>
+        <Id>39503119</Id>
+        <Item Name="PubDate" Type="Date">2024 May 3</Item>
+        <Item Name="EPubDate" Type="Date">2024 May 3</Item>
+        <Item Name="Source" Type="String">Anesth Prog</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Hoang T</Item>
+            <Item Name="Author" Type="String">Dowdy RAE</Item>
+        </Item>
+        <Item Name="LastAuthor" Type="String">Dowdy RAE</Item>
+        <Item Name="Title" Type="String">A Review of Muscular Dystrophies.</Item>
+        <Item Name="Volume" Type="String">71</Item>
+        <Item Name="Issue" Type="String">1</Item>
+        <Item Name="Pages" Type="String">44-52</Item>
+        <Item Name="LangList" Type="List">
+            <Item Name="Lang" Type="String">English</Item>
+        </Item>
+        <Item Name="NlmUniqueID" Type="String">0043533</Item>
+        <Item Name="ISSN" Type="String">0003-3006</Item>
+        <Item Name="ESSN" Type="String">1878-7177</Item>
+        <Item Name="PubTypeList" Type="List">
+            <Item Name="PubType" Type="String">Journal Article</Item>
+            <Item Name="PubType" Type="String">Review</Item>
+        </Item>
+        <Item Name="RecordStatus" Type="String">PubMed - indexed for MEDLINE</Item>
+        <Item Name="PubStatus" Type="String">epublish</Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">39503119</Item>
+            <Item Name="pmc" Type="String">PMC11101287</Item>
+            <Item Name="pmcid" Type="String">pmc-id: PMC11101287;</Item>
+            <Item Name="doi" Type="String">10.2344/673191</Item>
+        </Item>
+        <Item Name="DOI" Type="String">10.2344/673191</Item>
+        <Item Name="History" Type="List">
+            <Item Name="received" Type="Date">2023/11/13 00:00</Item>
+            <Item Name="accepted" Type="Date">2024/02/09 00:00</Item>
+            <Item Name="medline" Type="Date">2024/11/06 06:22</Item>
+            <Item Name="pubmed" Type="Date">2024/11/06 06:21</Item>
+            <Item Name="entrez" Type="Date">2024/11/06 05:31</Item>
+            <Item Name="pmc-release" Type="Date">2024/09/01 00:00</Item>
+        </Item>
+        <Item Name="References" Type="List" />
+        <Item Name="HasAbstract" Type="Integer">1</Item>
+        <Item Name="PmcRefCount" Type="Integer">22</Item>
+        <Item Name="FullJournalName" Type="String">Anesthesia progress</Item>
+        <Item Name="ELocationID" Type="String">doi: 10.2344/673191</Item>
+        <Item Name="SO" Type="String">2024 May 3;71(1):44-52</Item>
+    </DocSum>
+    <DocSum>
+        <Id>20228183</Id>
+        <Item Name="PubDate" Type="Date">2010 Apr</Item>
+        <Item Name="EPubDate" Type="Date"></Item>
+        <Item Name="Source" Type="String">Br J Anaesth</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Hopkins PM</Item>
+        </Item>
+        <Item Name="LastAuthor" Type="String">Hopkins PM</Item>
+        <Item Name="Title" Type="String">Anaesthesia and the sex-linked dystrophies: between a rock and a hard place.</Item>
+        <Item Name="Volume" Type="String">104</Item>
+        <Item Name="Issue" Type="String">4</Item>
+        <Item Name="Pages" Type="String">397-400</Item>
+        <Item Name="LangList" Type="List">
+            <Item Name="Lang" Type="String">English</Item>
+        </Item>
+        <Item Name="NlmUniqueID" Type="String">0372541</Item>
+        <Item Name="ISSN" Type="String">0007-0912</Item>
+        <Item Name="ESSN" Type="String">1471-6771</Item>
+        <Item Name="PubTypeList" Type="List">
+            <Item Name="PubType" Type="String">Comment</Item>
+            <Item Name="PubType" Type="String">Editorial</Item>
+        </Item>
+        <Item Name="RecordStatus" Type="String">PubMed - indexed for MEDLINE</Item>
+        <Item Name="PubStatus" Type="String">ppublish</Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">20228183</Item>
+            <Item Name="doi" Type="String">10.1093/bja/aeq036</Item>
+            <Item Name="pii" Type="String">S0007-0912(17)33640-1</Item>
+        </Item>
+        <Item Name="DOI" Type="String">10.1093/bja/aeq036</Item>
+        <Item Name="History" Type="List">
+            <Item Name="entrez" Type="Date">2010/03/16 06:00</Item>
+            <Item Name="pubmed" Type="Date">2010/03/17 06:00</Item>
+            <Item Name="medline" Type="Date">2010/04/15 06:00</Item>
+        </Item>
+        <Item Name="References" Type="List">
+            <Item Name="Comment on" Type="String">Br J Anaesth. 2010 Apr;104(4):487-9. doi: 10.1093/bja/aeq035. PMID: 20190256</Item>
+        </Item>
+        <Item Name="HasAbstract" Type="Integer">0</Item>
+        <Item Name="PmcRefCount" Type="Integer">0</Item>
+        <Item Name="FullJournalName" Type="String">British journal of anaesthesia</Item>
+        <Item Name="ELocationID" Type="String">doi: 10.1093/bja/aeq036</Item>
+        <Item Name="SO" Type="String">2010 Apr;104(4):397-400</Item>
+    </DocSum>
+    <DocSum>
+        <Id>26070283</Id>
+        <Item Name="PubDate" Type="Date">2015 Oct 1</Item>
+        <Item Name="EPubDate" Type="Date">2015 Jun 9</Item>
+        <Item Name="Source" Type="String">Spine J</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Cawley DT</Item>
+            <Item Name="Author" Type="String">Carmody O</Item>
+            <Item Name="Author" Type="String">Dodds MK</Item>
+            <Item Name="Author" Type="String">McCormack D</Item>
+        </Item>
+        <Item Name="LastAuthor" Type="String">McCormack D</Item>
+        <Item Name="Title" Type="String">Early limited instrumentation of scoliosis in Duchenne muscular dystrophy: is a single-rod construct sufficient?</Item>
+        <Item Name="Volume" Type="String">15</Item>
+        <Item Name="Issue" Type="String">10</Item>
+        <Item Name="Pages" Type="String">2166-71</Item>
+        <Item Name="LangList" Type="List">
+            <Item Name="Lang" Type="String">English</Item>
+        </Item>
+        <Item Name="NlmUniqueID" Type="String">101130732</Item>
+        <Item Name="ISSN" Type="String">1529-9430</Item>
+        <Item Name="ESSN" Type="String">1878-1632</Item>
+        <Item Name="PubTypeList" Type="List">
+            <Item Name="PubType" Type="String">Journal Article</Item>
+        </Item>
+        <Item Name="RecordStatus" Type="String">PubMed - indexed for MEDLINE</Item>
+        <Item Name="PubStatus" Type="String">ppublish+epublish</Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">26070283</Item>
+            <Item Name="doi" Type="String">10.1016/j.spinee.2015.06.008</Item>
+            <Item Name="pii" Type="String">S1529-9430(15)00581-1</Item>
+        </Item>
+        <Item Name="DOI" Type="String">10.1016/j.spinee.2015.06.008</Item>
+        <Item Name="History" Type="List">
+            <Item Name="received" Type="Date">2014/12/16 00:00</Item>
+            <Item Name="revised" Type="Date">2015/05/02 00:00</Item>
+            <Item Name="accepted" Type="Date">2015/06/01 00:00</Item>
+            <Item Name="entrez" Type="Date">2015/06/14 06:00</Item>
+            <Item Name="pubmed" Type="Date">2015/06/14 06:00</Item>
+            <Item Name="medline" Type="Date">2016/06/10 06:00</Item>
+        </Item>
+        <Item Name="References" Type="List" />
+        <Item Name="HasAbstract" Type="Integer">1</Item>
+        <Item Name="PmcRefCount" Type="Integer">0</Item>
+        <Item Name="FullJournalName" Type="String">The spine journal : official journal of the North American Spine Society</Item>
+        <Item Name="ELocationID" Type="String">doi: 10.1016/j.spinee.2015.06.008</Item>
+        <Item Name="SO" Type="String">2015 Oct 1;15(10):2166-71</Item>
+    </DocSum>
+    <DocSum>
+        <Id>23919455</Id>
+        <Item Name="PubDate" Type="Date">2013 Sep</Item>
+        <Item Name="EPubDate" Type="Date">2013 Aug 6</Item>
+        <Item Name="Source" Type="String">Paediatr Anaesth</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Segura LG</Item>
+            <Item Name="Author" Type="String">Lorenz JD</Item>
+            <Item Name="Author" Type="String">Weingarten TN</Item>
+            <Item Name="Author" Type="String">Scavonetto F</Item>
+            <Item Name="Author" Type="String">Bojanić K</Item>
+            <Item Name="Author" Type="String">Selcen D</Item>
+            <Item Name="Author" Type="String">Sprung J</Item>
+        </Item>
+        <Item Name="LastAuthor" Type="String">Sprung J</Item>
+        <Item Name="Title" Type="String">Anesthesia and Duchenne or Becker muscular dystrophy: review of 117 anesthetic exposures.</Item>
+        <Item Name="Volume" Type="String">23</Item>
+        <Item Name="Issue" Type="String">9</Item>
+        <Item Name="Pages" Type="String">855-64</Item>
+        <Item Name="LangList" Type="List">
+            <Item Name="Lang" Type="String">English</Item>
+        </Item>
+        <Item Name="NlmUniqueID" Type="String">9206575</Item>
+        <Item Name="ISSN" Type="String">1155-5645</Item>
+        <Item Name="ESSN" Type="String">1460-9592</Item>
+        <Item Name="PubTypeList" Type="List">
+            <Item Name="PubType" Type="String">Journal Article</Item>
+        </Item>
+        <Item Name="RecordStatus" Type="String">PubMed - indexed for MEDLINE</Item>
+        <Item Name="PubStatus" Type="String">ppublish+epublish</Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">23919455</Item>
+            <Item Name="doi" Type="String">10.1111/pan.12248</Item>
+        </Item>
+        <Item Name="DOI" Type="String">10.1111/pan.12248</Item>
+        <Item Name="History" Type="List">
+            <Item Name="accepted" Type="Date">2013/07/13 00:00</Item>
+            <Item Name="entrez" Type="Date">2013/08/08 06:00</Item>
+            <Item Name="pubmed" Type="Date">2013/08/08 06:00</Item>
+            <Item Name="medline" Type="Date">2014/03/13 06:00</Item>
+        </Item>
+        <Item Name="References" Type="List" />
+        <Item Name="HasAbstract" Type="Integer">1</Item>
+        <Item Name="PmcRefCount" Type="Integer">0</Item>
+        <Item Name="FullJournalName" Type="String">Paediatric anaesthesia</Item>
+        <Item Name="ELocationID" Type="String">doi: 10.1111/pan.12248</Item>
+        <Item Name="SO" Type="String">2013 Sep;23(9):855-64</Item>
+    </DocSum>
+    <DocSum>
+        <Id>30554118</Id>
+        <Item Name="PubDate" Type="Date">2019 Feb</Item>
+        <Item Name="EPubDate" Type="Date">2018 Dec 13</Item>
+        <Item Name="Source" Type="String">Biomed Pharmacother</Item>
+        <Item Name="AuthorList" Type="List">
+            <Item Name="Author" Type="String">Hoxha M</Item>
+        </Item>
+        <Item Name="LastAuthor" Type="String">Hoxha M</Item>
+        <Item Name="Title" Type="String">Duchenne muscular dystrophy: Focus on arachidonic acid metabolites.</Item>
+        <Item Name="Volume" Type="String">110</Item>
+        <Item Name="Issue" Type="String"></Item>
+        <Item Name="Pages" Type="String">796-802</Item>
+        <Item Name="LangList" Type="List">
+            <Item Name="Lang" Type="String">English</Item>
+        </Item>
+        <Item Name="NlmUniqueID" Type="String">8213295</Item>
+        <Item Name="ISSN" Type="String">0753-3322</Item>
+        <Item Name="ESSN" Type="String">1950-6007</Item>
+        <Item Name="PubTypeList" Type="List">
+            <Item Name="PubType" Type="String">Journal Article</Item>
+            <Item Name="PubType" Type="String">Review</Item>
+        </Item>
+        <Item Name="RecordStatus" Type="String">PubMed - indexed for MEDLINE</Item>
+        <Item Name="PubStatus" Type="String">ppublish+epublish</Item>
+        <Item Name="ArticleIds" Type="List">
+            <Item Name="pubmed" Type="String">30554118</Item>
+            <Item Name="doi" Type="String">10.1016/j.biopha.2018.12.034</Item>
+            <Item Name="pii" Type="String">S0753-3322(18)36766-0</Item>
+        </Item>
+        <Item Name="DOI" Type="String">10.1016/j.biopha.2018.12.034</Item>
+        <Item Name="History" Type="List">
+            <Item Name="received" Type="Date">2018/09/25 00:00</Item>
+            <Item Name="revised" Type="Date">2018/12/07 00:00</Item>
+            <Item Name="accepted" Type="Date">2018/12/07 00:00</Item>
+            <Item Name="pubmed" Type="Date">2018/12/17 06:00</Item>
+            <Item Name="medline" Type="Date">2019/04/19 06:00</Item>
+            <Item Name="entrez" Type="Date">2018/12/17 06:00</Item>
+        </Item>
+        <Item Name="References" Type="List" />
+        <Item Name="HasAbstract" Type="Integer">1</Item>
+        <Item Name="PmcRefCount" Type="Integer">0</Item>
+        <Item Name="FullJournalName" Type="String">Biomedicine &amp; pharmacotherapy = Biomedecine &amp; pharmacotherapie</Item>
+        <Item Name="ELocationID" Type="String">doi: 10.1016/j.biopha.2018.12.034</Item>
+        <Item Name="SO" Type="String">2019 Feb;110:796-802</Item>
+    </DocSum>
+</eSummaryResult>

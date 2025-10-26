@@ -1,0 +1,40 @@
+1. Paediatr Anaesth. 2013 Sep;23(9):855-64. doi: 10.1111/pan.12248. Epub 2013 Aug
+ 6.
+
+Anesthesia and Duchenne or Becker muscular dystrophy: review of 117 anesthetic 
+exposures.
+
+Segura LG(1), Lorenz JD, Weingarten TN, Scavonetto F, Bojanić K, Selcen D, 
+Sprung J.
+
+Author information:
+(1)Department of Anesthesiology, Mayo Clinic, Rochester, MN 55905, USA.
+
+BACKGROUND: Duchenne muscular dystrophy (DMD) and Becker muscular dystrophy 
+(BMD) are associated with life-threatening perioperative complications, 
+including rhabdomyolysis, hyperkalemia, and hyperthermia. Current 
+recommendations contraindicate use of succinylcholine and volatile anesthetics; 
+however, the latter recommendation remains controversial.
+OBJECTIVE: To review the perioperative outcomes of patients with DMD and BMD.
+METHODS: We reviewed records of patients with DMD or BMD who underwent 
+anesthetic management at our institution from January 1990 through December 
+2011.
+RESULTS: We identified 47 patients (DMD, 37; BMD, 10) who underwent 117 
+anesthetic exposures (DMD, 101; BMD, 16). Volatile anesthetic agents were used 
+66 times (DMD, 59; BMD, 7). One patient with undiagnosed BMD received 
+succinylcholine and developed acute rhabdomyolysis and hyperkalemic cardiac 
+arrest. All other major complications were attributed to the procedure (i.e., 
+large bleeding), to preexisting comorbidities (i.e., respiratory failure, 
+cardiac disease), or to both.
+CONCLUSIONS: Use of succinylcholine in children with dystrophinopathy is 
+contraindicated. These patients have significant comorbidities and are 
+frequently undergoing extensive operations; complications related to these 
+factors can develop, as evidenced by our series. These complications may occur 
+with use of volatile and nonvolatile anesthetics. However, because most of our 
+patients were older than 8 years at the time of surgery, our observation cannot 
+be generalized to younger dystrophin-deficient children.
+
+© 2013 John Wiley & Sons Ltd.
+
+DOI: 10.1111/pan.12248
+PMID: 23919455 [Indexed for MEDLINE]
