@@ -10,7 +10,7 @@ from app.services.llm_batches import LLMRequestBatch, SnippetLLMEntry
 from app.services.openai_client import LLMCompletionResult, OpenAIChatClient
 
 
-class _StubCompletions:
+class _StubResponses:
     def __init__(self, response: object) -> None:
         self._response = response
         self.last_kwargs: dict[str, object] | None = None
@@ -22,7 +22,7 @@ class _StubCompletions:
 
 class _StubOpenAIClient:
     def __init__(self, response: object) -> None:
-        self.chat = SimpleNamespace(completions=_StubCompletions(response))
+        self.responses = _StubResponses(response)
 
 
 def _make_batch() -> LLMRequestBatch:
@@ -49,9 +49,20 @@ def _make_batch() -> LLMRequestBatch:
 
 
 def _make_response(content: object) -> object:
-    usage = SimpleNamespace(prompt_tokens=100, completion_tokens=55, total_tokens=155)
-    choice = SimpleNamespace(message=SimpleNamespace(content=content))
-    return SimpleNamespace(id="resp-123", model="gpt-4o-mini", choices=[choice], usage=usage)
+    if isinstance(content, list):
+        combined_text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    else:
+        combined_text = str(content)
+    usage = SimpleNamespace(input_tokens=100, output_tokens=55, total_tokens=155)
+    output_content = SimpleNamespace(text=combined_text)
+    output = [SimpleNamespace(content=[output_content])]
+    return SimpleNamespace(
+        id="resp-123",
+        model="gpt-5-mini",
+        output=output,
+        output_text=combined_text,
+        usage=usage,
+    )
 
 
 def test_run_batches_returns_result_with_stub_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,14 +79,18 @@ def test_run_batches_returns_result_with_stub_client(monkeypatch: pytest.MonkeyP
     assert len(results) == 1
     result = results[0]
     assert isinstance(result, LLMCompletionResult)
-    assert result.model == "gpt-4o-mini"
+    assert result.model == client.model
     assert result.response_id == "resp-123"
     assert result.parsed_json() == payload
 
-    assert stub.chat.completions.last_kwargs is not None
-    kwargs = stub.chat.completions.last_kwargs
-    assert kwargs["messages"] == batch.messages
-    assert kwargs["response_format"] == {"type": "json_object"}
+    assert stub.responses.last_kwargs is not None
+    kwargs = stub.responses.last_kwargs
+    assert kwargs["model"] == client.model
+    assert "text" in kwargs
+    assert kwargs["text"]["format"]["type"] == "json_schema"
+    assert kwargs["input"][0]["role"] == "system"
+    assert kwargs["input"][0]["content"][0]["type"] == "input_text"
+    assert kwargs["input"][0]["content"][0]["text"] == "System"
 
 
 def test_client_requires_api_key_when_no_custom_client(monkeypatch: pytest.MonkeyPatch) -> None:

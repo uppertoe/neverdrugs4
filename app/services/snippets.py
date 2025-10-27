@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import ArticleArtefact, ArticleSnippet
+from app.services.drug_classes import resolve_drug_group
 from app.services.query_terms import DRUG_TEXT_TERMS
 
 _NEGATING_RISK_PATTERNS: tuple[str, ...] = (
@@ -92,6 +93,75 @@ DEFAULT_SAFETY_CUES: tuple[str, ...] = (
     "well-tolerated",
     "without complications",
 )
+THERAPY_ROLE_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
+    "mh-therapy": {
+        "condition_terms": ("malignant hyperthermia", "mh"),
+        "keywords": (
+            "treat",
+            "treated",
+            "treating",
+            "treatment",
+            "therapy",
+            "therapeutic",
+            "manage",
+            "managed",
+            "managing",
+            "management",
+            "administer",
+            "administered",
+            "administering",
+            "administration",
+            "give",
+            "given",
+            "giving",
+            "dose",
+            "dosing",
+            "bolus",
+            "reversal",
+            "reverse",
+            "reverses",
+            "reversed",
+            "responded",
+            "response",
+            "mitigates",
+            "mitigated",
+            "mitigate",
+            "ameliorates",
+            "ameliorated",
+            "ameliorate",
+            "rescue",
+            "only effective",
+            "first-line",
+            "should be available",
+            "required",
+            "requires",
+            "requirement",
+            "must have",
+            "availability",
+            "prompt",
+            "immediate",
+            "loading",
+            "infusion",
+            "stocked",
+        ),
+        "exclusions": (
+            "contraindicated",
+            "contraindication",
+            "should not",
+            "do not use",
+            "avoid",
+            "toxicity",
+            "toxic",
+            "hepatotoxic",
+            "hepatotoxicity",
+            "adverse event",
+            "adverse events",
+            "serious adverse",
+            "black box",
+            "risk of hepatotoxicity",
+        ),
+    }
+}
 DEFAULT_WINDOW_CHARS = 600
 _MIN_SNIPPET_CHARS = 60
 
@@ -123,6 +193,18 @@ class ArticleSnippetExtractor:
         self.risk_cues = tuple(cue.lower() for cue in risk_cues)
         self.safety_cues = tuple(cue.lower() for cue in safety_cues)
         self.window_chars = max(100, window_chars)
+        self.therapy_role_patterns = {
+            role: {
+                "condition_terms": tuple(
+                    term.lower() for term in config.get("condition_terms", ())
+                ),
+                "keywords": tuple(keyword.lower() for keyword in config.get("keywords", ())),
+                "exclusions": tuple(
+                    exclusion.lower() for exclusion in config.get("exclusions", ())
+                ),
+            }
+            for role, config in THERAPY_ROLE_PATTERNS.items()
+        }
 
     def extract_snippets(
         self,
@@ -152,6 +234,7 @@ class ArticleSnippetExtractor:
 
         for drug in self.drug_terms:
             pattern = re.compile(rf"\b{re.escape(drug)}\b")
+            drug_group = resolve_drug_group(drug)
             for match in pattern.finditer(lower_text):
                 snippet = self._build_window(normalized_text, match.start(), match.end())
                 if len(snippet) < _MIN_SNIPPET_CHARS:
@@ -160,7 +243,9 @@ class ArticleSnippetExtractor:
                 snippet_matches_condition = any(
                     alias in snippet_lower for alias in condition_aliases
                 )
-                classification, cues = self._classify(snippet_lower, drug)
+                classification, cues = self._classify(
+                    snippet_lower, drug, drug_group.roles
+                )
                 inferred_condition = False
                 if classification is None:
                     if snippet_matches_condition:
@@ -218,7 +303,9 @@ class ArticleSnippetExtractor:
             snippet = snippet[: period_right + 1]
         return snippet
 
-    def _classify(self, snippet_lower: str, drug: str) -> tuple[str | None, tuple[str, ...]]:
+    def _classify(
+        self, snippet_lower: str, drug: str, drug_roles: tuple[str, ...]
+    ) -> tuple[str | None, tuple[str, ...]]:
         risk_hits = tuple(
             cue
             for cue in self.risk_cues
@@ -231,16 +318,89 @@ class ArticleSnippetExtractor:
             risk_hits = risk_hits + (alt_phrase,)
 
         if not risk_hits and not safety_hits:
-            return None, ()
+            base_classification: str | None = None
+            cues: tuple[str, ...] = ()
+        elif risk_hits and not safety_hits:
+            base_classification = "risk"
+            cues = risk_hits
+        elif safety_hits and not risk_hits:
+            base_classification = "safety"
+            cues = safety_hits
+        else:
+            base_classification = "risk"
+            cues = risk_hits + safety_hits
 
-        if risk_hits and not safety_hits:
-            return "risk", risk_hits
+        override = self._apply_therapy_override(
+            snippet_lower=snippet_lower,
+            drug=drug,
+            drug_roles=drug_roles,
+            base_classification=base_classification,
+            safety_hits=safety_hits,
+        )
+        if override is not None:
+            return override
 
-        if safety_hits and not risk_hits:
-            return "safety", safety_hits
+        return base_classification, cues
 
-        # If both risk and safety cues are present, prioritise risk for caution
-        return "risk", risk_hits + safety_hits
+    def _apply_therapy_override(
+        self,
+        *,
+        snippet_lower: str,
+        drug: str,
+        drug_roles: tuple[str, ...],
+        base_classification: str | None,
+        safety_hits: tuple[str, ...],
+    ) -> tuple[str, tuple[str, ...]] | None:
+        for role in drug_roles:
+            config = self.therapy_role_patterns.get(role)
+            if not config:
+                continue
+
+            if config.get("condition_terms") and not any(
+                term in snippet_lower for term in config["condition_terms"]
+            ):
+                continue
+
+            if config.get("exclusions") and any(
+                exclusion in snippet_lower for exclusion in config["exclusions"]
+            ):
+                continue
+
+            if not self._matches_therapy_role(snippet_lower, drug, config.get("keywords", ())):
+                continue
+
+            cue_label = f"therapy-role:{role}"
+            cues = tuple(dict.fromkeys((*safety_hits, cue_label)))
+            if not cues:
+                cues = (cue_label,)
+            target_classification = "safety" if base_classification != "safety" else "safety"
+            return target_classification, cues
+
+        return None
+
+    @staticmethod
+    def _matches_therapy_role(
+        snippet_lower: str,
+        drug: str,
+        keywords: tuple[str, ...],
+        *,
+        radius: int = 80,
+    ) -> bool:
+        if not keywords:
+            return False
+
+        start = 0
+        while True:
+            idx = snippet_lower.find(drug, start)
+            if idx == -1:
+                break
+            window_start = max(0, idx - radius)
+            window_end = idx + len(drug) + radius
+            window = snippet_lower[window_start:window_end]
+            if any(keyword in window for keyword in keywords):
+                return True
+            start = idx + len(drug)
+        return False
 
     def _score_snippet(
         self,

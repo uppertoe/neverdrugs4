@@ -9,6 +9,7 @@ class DrugGroup:
     key: str
     label: str
     classes: Tuple[str, ...] = ()
+    roles: Tuple[str, ...] = ()
 
 
 _VOLATILE_ANESTHETICS = (
@@ -51,10 +52,12 @@ _GENERAL_NEUROMUSCULAR = (
 def _build_default_groups() -> Dict[str, DrugGroup]:
     groups: Dict[str, DrugGroup] = {}
 
-    def register(names: Iterable[str], *, key: str, label: str, classes: Tuple[str, ...]) -> None:
+    def register(
+        names: Iterable[str], *, key: str, label: str, classes: Tuple[str, ...], roles: Tuple[str, ...] = ()
+    ) -> None:
         for name in names:
             normalized = name.lower()
-            groups[normalized] = DrugGroup(key=key, label=label, classes=classes)
+            groups[normalized] = DrugGroup(key=key, label=label, classes=classes, roles=roles)
 
     register(
         _VOLATILE_ANESTHETICS,
@@ -82,9 +85,16 @@ def _build_default_groups() -> Dict[str, DrugGroup]:
         key="neuromuscular-blockers",
         label="neuromuscular blocking agents",
         classes=("neuromuscular blocking agent",),
+        roles=("generic-class",),
     )
 
-    register(("dantrolene",), key="dantrolene", label="dantrolene", classes=("ryr1 modulator",))
+    register(
+        ("dantrolene",),
+        key="dantrolene",
+        label="dantrolene",
+        classes=("ryr1 modulator",),
+        roles=("mh-therapy",),
+    )
 
     return groups
 

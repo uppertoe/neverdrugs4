@@ -10,15 +10,62 @@ from app.models import ArticleArtefact
 from app.services.claims import ClaimEvidenceGroup, group_snippets_for_claims
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are a clinical evidence synthesis assistant. "
-    "Summarise whether article snippets describe safety or risk relationships between drugs and the referenced condition. "
-    "Only infer what is explicitly supported by the snippets."
+    "You are a clinical evidence synthesis assistant. reason carefully about causality and therapeutic intent before classifying a claim. "
+    "Use only the provided snippets and claim groups, cite every snippet you rely on, and avoid inferring new facts."
 )
 _PROMPT_OVERHEAD_TOKENS = 220
 _SNIPPET_METADATA_TOKENS = 18
 _SNIPPET_TOKEN_MULTIPLIER = 1.15
 DEFAULT_MAX_PROMPT_TOKENS = 1800
 DEFAULT_MAX_SNIPPETS_PER_BATCH = 8
+
+_SAMPLE_RESPONSE_JSON = (
+    "{\n"
+    "  \"condition\": \"King Denborough syndrome\",\n"
+    "  \"claims\": [\n"
+    "    {\n"
+    "      \"claim_id\": \"risk:succinylcholine\",\n"
+    "      \"classification\": \"risk\",\n"
+    "      \"drug_classes\": [\"depolarising neuromuscular blocker\"],\n"
+    "      \"drugs\": [\"succinylcholine\"],\n"
+    "      \"summary\": \"Succinylcholine is repeatedly described as triggering malignant hyperthermia crises in RYR1-susceptible patients.\",\n"
+    "      \"confidence\": \"high\",\n"
+    "      \"supporting_evidence\": [\n"
+    "        {\n"
+    "          \"snippet_id\": \"4\",\n"
+    "          \"pmid\": \"33190635\",\n"
+    "          \"article_title\": \"Ryanodine receptor 1-related disorders: an historical perspective and proposal for a unified nomenclature.\",\n"
+    "          \"key_points\": [\n"
+    "            \"Review explicitly links volatile anesthetics and depolarising muscle relaxants (succinylcholine) with malignant hyperthermia episodes.\",\n"
+    "            \"Describes malignant hyperthermia features that occurred following succinylcholine exposure.\"\n"
+    "          ],\n"
+    "          \"notes\": \"Classification is risk because the snippet names succinylcholine as the precipitating agent.\"\n"
+    "        }\n"
+    "      ]\n"
+    "    },\n"
+    "    {\n"
+    "      \"claim_id\": \"uncertain:dantrolene\",\n"
+    "      \"classification\": \"uncertain\",\n"
+    "      \"drug_classes\": [\"mh-therapy\", \"ryr1 modulator\"],\n"
+    "      \"drugs\": [\"dantrolene\"],\n"
+    "      \"summary\": \"Dantrolene is discussed as a potential therapy for RYR1 Ca2+ leak, but the authors emphasise the need for more preclinical confirmation before routine use.\",\n"
+    "      \"confidence\": \"low\",\n"
+    "      \"supporting_evidence\": [\n"
+    "        {\n"
+    "          \"snippet_id\": \"8\",\n"
+    "          \"pmid\": \"30406384\",\n"
+    "          \"article_title\": \"Ryanodine Receptor 1-Related Myopathies: Diagnostic and Therapeutic Approaches.\",\n"
+    "          \"key_points\": [\n"
+    "            \"Notes it is plausible that some RYR1 variants could benefit from periodic dantrolene.\",\n"
+    "            \"States more preclinical work is needed to confirm safety and functional impact before recommending routine administration.\"\n"
+    "          ],\n"
+    "          \"notes\": \"Evidence signals therapeutic intent but emphasises uncertainty, so classification remains uncertain with low confidence.\"\n"
+    "        }\n"
+    "      ]\n"
+    "    }\n"
+    "  ]\n"
+    "}"
+)
 
 
 @dataclass(slots=True)
@@ -196,7 +243,7 @@ def _render_user_prompt(
         '  "claims": [\n'
         "    {\n"
         '      "claim_id": "string",\n'
-        '      "classification": "risk | safety",\n'
+        '      "classification": "risk | safety | uncertain",\n'
         '      "drug_classes": ["string"],\n'
         '      "drugs": ["string"],\n'
         '      "summary": "string",\n'
@@ -242,9 +289,12 @@ def _render_user_prompt(
     snippet_section = "\n".join(snippet_blocks)
 
     claim_blocks: list[str] = []
+    generic_groups: list[ClaimEvidenceGroup[SnippetLLMEntry]] = []
     for idx, group in enumerate(claim_groups, start=1):
         class_line = ", ".join(group.drug_classes) if group.drug_classes else "none"
         drugs_line = ", ".join(group.drug_terms)
+        if "generic-class" in group.drug_classes:
+            generic_groups.append(group)
         snippet_lines: list[str] = []
         for inner_idx, snippet in enumerate(group.snippets, start=1):
             snippet_identifier = snippet_identifiers.get(id(snippet))
@@ -282,20 +332,52 @@ def _render_user_prompt(
 
     claim_section = "\n".join(claim_blocks)
 
+    caution_section = ""
+    if generic_groups:
+        caution_labels: list[str] = []
+        for group in generic_groups:
+            if group.drug_terms:
+                term_list = ", ".join(group.drug_terms)
+                caution_labels.append(f"{group.drug_label} ({term_list})")
+            else:
+                caution_labels.append(group.drug_label)
+        joined_labels = "; ".join(caution_labels)
+        caution_section = (
+            "CAUTION\n"
+            f"The following claim groups are a broad drug category; prioritise specific named drugs when evidence supports them: {joined_labels}.\n\n"
+        )
+
     return (
+        "CONTEXT\n"
         f"Condition: {condition_label}\n"
-        f"Related terms: {mesh_line}\n\n"
-        "Respond with valid JSON following this schema:\n"
+        f"Related terms: {mesh_line}\n"
+        "You are given ranked evidence snippets grouped by drug. Higher snippet_score and lower article_rank indicate stronger evidence.\n"
+        "Each claim_group bundles snippets about the same drug or drug class.\n\n"
+        "LEGEND\n"
+        "- snippet_id: Stable identifier for citation.\n"
+        "- snippet_score: Higher values reflect stronger evidence based on article quality and cues.\n"
+        "- article_rank: Lower numbers indicate higher-priority articles in our search.\n"
+        "- cues: Keywords that influenced initial classification (risk/safety); verify them before accepting.\n"
+        "- claim_group_id: Use this when describing which evidence you aggregated.\n\n"
+        "INSTRUCTIONS\n"
+        "1. Determine whether each drug is described as a trigger/risk, a safe option, a therapy/mitigation, or inconclusive.\n"
+        "2. Reason about causality: do not label a drug as risk when it is merely co-administered; note when it is the therapy (e.g., dantrolene).\n"
+        "3. Merge snippets that support the same conclusion into one claim and cite every snippet_id you rely on.\n"
+        "4. If snippets conflict, create separate claims and explain the disagreement in the summaries/notes.\n"
+        "5. Classification must be risk, safety, or uncertain. Use uncertain when evidence is mixed or insufficient.\n"
+        "6. Provide short key_points (1–2 sentences) explaining the rationale drawn from each snippet.\n"
+        "7. Confidence should reflect strength and agreement of evidence.\n"
+        "8. Do not introduce new drugs or facts not present in the snippets.\n"
+        "9. Return only valid JSON matching the schema below.\n\n"
+        "SCHEMA\n"
         f"{schema_block}\n"
-        "Synthesise claims by weighing all snippets in each supporting group collectively.\n"
-        "Each claim must reference the relevant claim_group_id, list the drug classes, and cite every supporting snippet id used.\n"
-        "Confidence must be one of: low, medium, high.\n"
-        "Return 'summary' as a short assertion about the condition and drugs.\n"
-        "Use the provided snippet_id values exactly as written.\n"
+        "SAMPLE RESPONSE\n"
+        f"{_SAMPLE_RESPONSE_JSON}\n\n"
+    f"{caution_section}"
         "Snippets (full listing):\n"
         f"{snippet_section}\n\n"
         "Claim groups (use these to organise the response):\n"
-        f"{claim_section}\n\n"
+        f"{claim_section}\n"
         "Return only JSON."
     )
 

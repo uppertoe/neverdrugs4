@@ -3,7 +3,53 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.models import ArticleArtefact, ArticleSnippet, SearchTerm
-from app.services.llm_batches import LLMRequestBatch, build_llm_batches
+from app.services.claims import ClaimEvidenceGroup
+from app.services.llm_batches import (
+    LLMRequestBatch,
+    SnippetLLMEntry,
+    _render_user_prompt,
+    build_llm_batches,
+)
+
+
+def test_render_user_prompt_downranks_generic_groups() -> None:
+    snippet = SnippetLLMEntry(
+        pmid="pmid-1",
+        snippet_id=1,
+        drug="muscle relaxants",
+        classification="risk",
+        snippet_text="Muscle relaxants were mentioned in a case series of malignant hyperthermia.",
+        snippet_score=2.5,
+        cues=["risk"],
+        article_rank=1,
+        article_score=2.0,
+        citation_url="url",
+        article_title="title",
+        content_source="pubmed",
+        token_estimate=120,
+    )
+
+    group = ClaimEvidenceGroup[
+        SnippetLLMEntry
+    ](
+        group_key="risk:neuromuscular-blockers",
+        classification="risk",
+        drug_label="neuromuscular blocking agents",
+        drug_terms=("muscle relaxants",),
+        drug_classes=("neuromuscular blocking agent", "generic-class"),
+        snippets=[snippet],
+        top_score=2.5,
+    )
+
+    prompt = _render_user_prompt(
+        condition_label="King Denborough syndrome",
+        mesh_terms=["King Denborough syndrome"],
+        snippets=[snippet],
+        claim_groups=[group],
+    )
+
+    assert "muscle relaxants" in prompt
+    assert "broad drug category" in prompt
 
 
 def _make_search_term(session, canonical: str = "condition") -> SearchTerm:

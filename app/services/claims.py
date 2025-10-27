@@ -63,6 +63,7 @@ def group_snippets_for_claims(
                 "drug_label": drug_group.label,
                 "drug_terms": {drug_name},
                 "drug_classes": set(drug_group.classes),
+                "drug_roles": set(drug_group.roles),
                 "snippets": [snippet],
                 "top_score": getattr(snippet, "snippet_score", 0.0),
             }
@@ -71,6 +72,7 @@ def group_snippets_for_claims(
         bucket = buckets[key]
         bucket["drug_terms"].add(drug_name)
         bucket["drug_classes"].update(drug_group.classes)
+        bucket["drug_roles"].update(drug_group.roles)
         bucket["snippets"].append(snippet)
         score = getattr(snippet, "snippet_score", 0.0)
         if score > bucket["top_score"]:
@@ -81,7 +83,9 @@ def group_snippets_for_claims(
         snippets_list = cast(List[SnippetT], payload["snippets"])
         snippets_list.sort(key=lambda item: getattr(item, "snippet_score", 0.0), reverse=True)
         drug_terms = tuple(sorted(cast(set[str], payload["drug_terms"]), key=lambda term: term.lower()))
-        drug_classes = tuple(sorted(cast(set[str], payload["drug_classes"])))
+        class_set = cast(set[str], payload["drug_classes"])
+        roles_set = cast(set[str], payload["drug_roles"])
+        drug_classes = tuple(sorted(class_set | roles_set))
         groups.append(
             ClaimEvidenceGroup(
                 group_key=f"{classification}:{group_key}",

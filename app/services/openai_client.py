@@ -4,7 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from dotenv import load_dotenv
 
@@ -29,8 +29,8 @@ else:
     APIError = Exception
     APIConnectionError = APITimeoutError = RateLimitError = ServiceUnavailableError = Exception
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-DEFAULT_OPENAI_TEMPERATURE = 0.0
+DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+DEFAULT_OPENAI_TEMPERATURE: float | None = None
 DEFAULT_OPENAI_MAX_RETRIES = 3
 DEFAULT_BACKOFF_SECONDS = 2.0
 
@@ -56,9 +56,9 @@ class OpenAIChatClient:
         *,
         api_key: str | None = None,
         model: str = DEFAULT_OPENAI_MODEL,
-        temperature: float = DEFAULT_OPENAI_TEMPERATURE,
+    temperature: float | None = DEFAULT_OPENAI_TEMPERATURE,
         max_retries: int = DEFAULT_OPENAI_MAX_RETRIES,
-        response_format: dict[str, str] | None = None,
+    response_schema: dict[str, Any] | None = None,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
         request_timeout: float | None = None,
         client: Any | None = None,
@@ -68,7 +68,79 @@ class OpenAIChatClient:
         self.max_retries = max(1, max_retries)
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.request_timeout = request_timeout
-        self.response_format = response_format or {"type": "json_object"}
+        self.response_schema = response_schema or {
+            "type": "json_schema",
+            "name": "llm_claims",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "condition": {"type": "string"},
+                    "claims": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "claim_id": {"type": "string"},
+                                "classification": {
+                                    "type": "string",
+                                    "enum": ["risk", "safety", "uncertain"],
+                                },
+                                "drug_classes": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "drugs": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "summary": {"type": "string"},
+                                "confidence": {
+                                    "type": "string",
+                                    "enum": ["low", "medium", "high"],
+                                },
+                                "supporting_evidence": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "snippet_id": {"type": "string"},
+                                            "pmid": {"type": "string"},
+                                            "article_title": {"type": "string"},
+                                            "key_points": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                            },
+                                            "notes": {"type": "string"},
+                                        },
+                                        "required": [
+                                            "snippet_id",
+                                            "pmid",
+                                            "article_title",
+                                            "key_points",
+                                            "notes",
+                                        ],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                            "required": [
+                                "claim_id",
+                                "classification",
+                                "drug_classes",
+                                "drugs",
+                                "summary",
+                                "confidence",
+                                "supporting_evidence",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["condition", "claims"],
+                "additionalProperties": False,
+            },
+        }
 
         if client is not None:
             self._client = client
@@ -106,12 +178,14 @@ class OpenAIChatClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self._client.chat.completions.create(
-                    model=model,
-                    messages=batch.messages,
-                    temperature=self.temperature,
-                    response_format=self.response_format,
-                )
+                request_payload: dict[str, Any] = {
+                    "model": model,
+                    "input": _convert_messages_to_responses_input(batch.messages),
+                    "text": {"format": self.response_schema},
+                }
+                if self.temperature is not None:
+                    request_payload["temperature"] = self.temperature
+                response = self._client.responses.create(**request_payload)
                 content = _extract_content(response)
                 usage = _extract_usage(response)
                 response_id = getattr(response, "id", "")
@@ -143,13 +217,34 @@ class OpenAIChatClient:
 
 
 def _extract_content(response: Any) -> str:
-    choices = getattr(response, "choices", None) or []
-    if not choices:
-        return ""
+    if hasattr(response, "output_text"):
+        text_value = getattr(response, "output_text")
+        if isinstance(text_value, str) and text_value.strip():
+            return text_value
 
-    message = choices[0].message
-    content = getattr(message, "content", "")
-    return _flatten_content(content)
+    outputs = getattr(response, "output", None) or getattr(response, "outputs", None)
+    if outputs:
+        texts: list[str] = []
+        for item in _ensure_iterable(outputs):
+            content = getattr(item, "content", None) or getattr(item, "contents", None)
+            if not content:
+                continue
+            for part in _ensure_iterable(content):
+                text = getattr(part, "text", None)
+                if text is None and isinstance(part, dict):
+                    text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+        if texts:
+            return "".join(texts)
+
+    choices = getattr(response, "choices", None) or []
+    if choices:
+        message = choices[0].message
+        content = getattr(message, "content", "")
+        return _flatten_content(content)
+
+    return ""
 
 
 def _flatten_content(content: Any) -> str:
@@ -177,12 +272,12 @@ def _extract_usage(response: Any) -> dict[str, int] | None:
         return None
 
     if isinstance(usage, dict):
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
         total_tokens = usage.get("total_tokens")
     else:
-        prompt_tokens = getattr(usage, "prompt_tokens", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
         total_tokens = getattr(usage, "total_tokens", None)
 
     data = {
@@ -195,3 +290,34 @@ def _extract_usage(response: Any) -> dict[str, int] | None:
         if isinstance(value, int)
     }
     return data or None
+
+
+def _convert_messages_to_responses_input(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if isinstance(content, str):
+            content_payload = [{"type": "input_text", "text": content}]
+        elif isinstance(content, list):
+            content_payload = []
+            for item in content:
+                if isinstance(item, dict) and "type" in item:
+                    payload_item = dict(item)
+                    if payload_item.get("type") == "text":
+                        payload_item["type"] = "input_text"
+                    content_payload.append(payload_item)
+                elif isinstance(item, str):
+                    content_payload.append({"type": "input_text", "text": item})
+            if not content_payload:
+                content_payload = [{"type": "input_text", "text": ""}]
+        else:
+            content_payload = [{"type": "input_text", "text": str(content)}]
+        converted.append({"role": role, "content": content_payload})
+    return converted
+
+
+def _ensure_iterable(value: Any) -> Iterable[Any]:
+    if isinstance(value, (list, tuple)):
+        return value
+    return (value,)

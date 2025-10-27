@@ -139,3 +139,30 @@ def test_group_snippets_separates_depolarising_and_non_depolarising_blockers() -
     assert non_depolarising.drug_label == "non-depolarising neuromuscular blockers"
     assert set(non_depolarising.drug_terms) == {"rocuronium"}
     assert set(non_depolarising.drug_classes) == {"non-depolarising neuromuscular blocker"}
+
+
+def test_group_snippets_flags_generic_class_groups() -> None:
+    generic = _entry(
+        snippet_id=30,
+        pmid="999001",
+        drug="muscle relaxants",
+        classification="risk",
+        score=4.0,
+        text="Muscle relaxants are associated with malignant hyperthermia in susceptible patients.",
+    )
+    specific = _entry(
+        snippet_id=31,
+        pmid="999002",
+        drug="succinylcholine",
+        classification="risk",
+        score=5.2,
+        text="Succinylcholine triggered malignant hyperthermia in the reported case.",
+    )
+
+    groups = group_snippets_for_claims([generic, specific])
+
+    generic_group = next(group for group in groups if group.drug_label == "neuromuscular blocking agents")
+    specific_group = next(group for group in groups if "succinylcholine" in group.drug_terms)
+
+    assert "generic-class" in generic_group.drug_classes
+    assert generic_group.top_score < specific_group.top_score

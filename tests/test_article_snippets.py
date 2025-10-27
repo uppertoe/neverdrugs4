@@ -145,3 +145,49 @@ def test_select_top_snippets_scales_with_article_weight() -> None:
     # ensure snippets are sorted by per-article score
     scores = [c.snippet_score for c in low_article_snippets]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_extract_snippets_labels_dantrolene_treatment_as_safety() -> None:
+    text = (
+        "Malignant hyperthermia is a life-threatening perioperative risk requiring rapid recognition. "
+        "Prompt administration of dantrolene is the only effective treatment and should be available in every theatre. "
+        "The initial dose of dantrolene reverses malignant hyperthermia crises when given without delay."
+    )
+
+    snippets = _extract(
+        text,
+        condition_terms=["malignant hyperthermia"],
+        pmid="9990001",
+        rank=1,
+        score=3.2,
+        pmc_ref_count=5,
+    )
+
+    dantrolene_snippets = [s for s in snippets if s.drug == "dantrolene"]
+    assert dantrolene_snippets, "Expected to capture a dantrolene snippet"
+    classification = {s.classification for s in dantrolene_snippets}
+    assert classification == {"safety"}
+    assert any(
+        any(cue.startswith("therapy-role:") for cue in snippet.cues) for snippet in dantrolene_snippets
+    )
+
+
+def test_extract_snippets_keeps_dantrolene_toxicity_as_risk() -> None:
+    text = (
+        "Malignant hyperthermia preparedness remains essential, yet clinicians should avoid dantrolene in patients "
+        "with severe hepatic disease because of the risk of hepatotoxicity and serious adverse events."
+    )
+
+    snippets = _extract(
+        text,
+        condition_terms=["malignant hyperthermia"],
+        pmid="9990002",
+        rank=1,
+        score=2.8,
+        pmc_ref_count=0,
+    )
+
+    dantrolene_snippets = [s for s in snippets if s.drug == "dantrolene"]
+    assert dantrolene_snippets, "Expected to capture a dantrolene snippet"
+    classification = {s.classification for s in dantrolene_snippets}
+    assert classification == {"risk"}
