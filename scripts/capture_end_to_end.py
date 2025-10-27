@@ -14,21 +14,31 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.database import Base, create_engine_for_url
-from app.models import ArticleArtefact, SearchArtefact
+from app.models import (
+    ArticleArtefact,
+    ProcessedClaim,
+    ProcessedClaimSet,
+    SearchArtefact,
+)
 from app.services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
 from app.services.llm_batches import LLMRequestBatch, build_llm_batches
 from app.services.nih_pipeline import resolve_condition_via_nih
 from app.services.nih_pubmed import NIHPubMedSearcher
 from app.services.openai_client import OpenAIChatClient
+from app.services.processed_claims import persist_processed_claims
+from app.services.search import compute_mesh_signature
 
 
 @contextmanager
 def _record_stage(label: str, timings: dict[str, float]) -> Iterator[None]:
+    print(f"-> {label}...", file=sys.stderr)
     start = time.perf_counter()
     try:
         yield
     finally:
-        timings[label] = time.perf_counter() - start
+        duration = time.perf_counter() - start
+        timings[label] = duration
+        print(f"   {label} completed in {duration:0.2f}s", file=sys.stderr)
 
 
 def _serialise_batch(batch: LLMRequestBatch) -> dict[str, object]:
@@ -124,6 +134,56 @@ def _collect_article_snapshot(session: Session, *, search_term_id: int) -> list[
     return snapshot
 
 
+def _collect_processed_claims_snapshot(session: Session, mesh_signature: str | None) -> list[dict[str, object]]:
+    if not mesh_signature:
+        return []
+
+    claim_set = (
+        session.query(ProcessedClaimSet)
+        .filter(ProcessedClaimSet.mesh_signature == mesh_signature)
+        .options(
+            selectinload(ProcessedClaimSet.claims)
+            .selectinload(ProcessedClaim.evidence)
+        )
+        .options(selectinload(ProcessedClaimSet.claims).selectinload(ProcessedClaim.drug_links))
+        .one_or_none()
+    )
+
+    if claim_set is None:
+        return []
+
+    claims_payload: list[dict[str, object]] = []
+    for claim in claim_set.claims:
+        claims_payload.append(
+            {
+                "claim_id": claim.claim_id,
+                "classification": claim.classification,
+                "summary": claim.summary,
+                "confidence": claim.confidence,
+                "drugs": list(claim.drugs),
+                "drug_classes": list(claim.drug_classes),
+                "source_claim_ids": list(claim.source_claim_ids),
+                "supporting_evidence": [
+                    {
+                        "snippet_id": evidence.snippet_id,
+                        "pmid": evidence.pmid,
+                        "article_title": evidence.article_title,
+                        "citation_url": evidence.citation_url,
+                        "key_points": list(evidence.key_points),
+                        "notes": evidence.notes,
+                    }
+                    for evidence in claim.evidence
+                ],
+                "drug_links": [
+                    {"term": link.term, "term_kind": link.term_kind}
+                    for link in claim.drug_links
+                ],
+            }
+        )
+
+    return claims_payload
+
+
 def capture_end_to_end(
     *,
     search_term: str,
@@ -203,9 +263,21 @@ def capture_end_to_end(
         with _record_stage("openai_run_batches", timings):
             responses = client.run_batches(batches)
 
+        mesh_signature = compute_mesh_signature(resolution.mesh_terms)
+        if responses and mesh_signature:
+            with _record_stage("persist_processed_claims", timings):
+                persist_processed_claims(
+                    session,
+                    search_term_id=resolution.search_term_id,
+                    mesh_signature=mesh_signature,
+                    condition_label=search_term,
+                    llm_payloads=responses,
+                )
+
         with _record_stage("collect_snapshot", timings):
             snippet_snapshot = _collect_snippet_snapshot(session, search_term_id=resolution.search_term_id)
             article_snapshot = _collect_article_snapshot(session, search_term_id=resolution.search_term_id)
+            processed_snapshot = _collect_processed_claims_snapshot(session, mesh_signature)
 
         payload = {
             "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -237,6 +309,7 @@ def capture_end_to_end(
                 }
                 for result in responses
             ],
+            "processed_claims": processed_snapshot,
         }
 
         with _record_stage("write_output", timings):

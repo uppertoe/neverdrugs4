@@ -118,3 +118,98 @@ class ArticleSnippet(Base):
     __table_args__ = (
         UniqueConstraint("article_artefact_id", "snippet_hash", name="uq_snippet_article_hash"),
     )
+
+
+class ProcessedClaimSet(Base):
+    __tablename__ = "processed_claim_sets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mesh_signature: Mapped[str] = mapped_column(String(512), unique=True, index=True, nullable=False)
+    condition_label: Mapped[str] = mapped_column(String(512), nullable=False)
+    last_search_term_id: Mapped[int | None] = mapped_column(ForeignKey("search_terms.id"), index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    claims: Mapped[List["ProcessedClaim"]] = relationship(
+        back_populates="claim_set",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class ProcessedClaim(Base):
+    __tablename__ = "processed_claims"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claim_set_id: Mapped[int] = mapped_column(ForeignKey("processed_claim_sets.id"), index=True, nullable=False)
+    claim_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    drugs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    drug_classes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    source_claim_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    claim_set: Mapped[ProcessedClaimSet] = relationship(back_populates="claims")
+    evidence: Mapped[List["ProcessedClaimEvidence"]] = relationship(
+        back_populates="claim",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    drug_links: Mapped[List["ProcessedClaimDrugLink"]] = relationship(
+        back_populates="claim",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class ProcessedClaimEvidence(Base):
+    __tablename__ = "processed_claim_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claim_id: Mapped[int] = mapped_column(ForeignKey("processed_claims.id"), index=True, nullable=False)
+    snippet_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    pmid: Mapped[str] = mapped_column(String(32), nullable=False)
+    article_title: Mapped[str | None] = mapped_column(String(512))
+    citation_url: Mapped[str | None] = mapped_column(String(512))
+    key_points: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    claim: Mapped[ProcessedClaim] = relationship(back_populates="evidence")
+
+
+class ProcessedClaimDrugLink(Base):
+    __tablename__ = "processed_claim_drug_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claim_id: Mapped[int] = mapped_column(ForeignKey("processed_claims.id"), index=True, nullable=False)
+    term: Mapped[str] = mapped_column(String(256), nullable=False)
+    term_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    claim: Mapped[ProcessedClaim] = relationship(back_populates="drug_links")
+
+    __table_args__ = (
+        UniqueConstraint("claim_id", "term", "term_kind", name="uq_claim_term_kind"),
+    )
