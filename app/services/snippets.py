@@ -92,6 +92,13 @@ DEFAULT_SAFETY_CUES: tuple[str, ...] = (
     "well tolerated",
     "well-tolerated",
     "without complications",
+    "ameliorated",
+    "ameliorate",
+    "prevent",
+    "preventative",
+    "indicated",
+    "efficacious",
+    "efficacy",
 )
 THERAPY_ROLE_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
     "mh-therapy": {

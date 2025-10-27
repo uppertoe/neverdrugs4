@@ -94,7 +94,7 @@ def test_resolve_and_poll_via_curl() -> None:
     resolve_payload = _curl_json(
         f"{_BASE_URL}/api/claims/resolve",
         method="POST",
-        data={"condition": condition, "force_refresh": True},
+        data={"condition": condition},
     )
 
     resolution = resolve_payload.get("resolution") or {}
@@ -104,14 +104,17 @@ def test_resolve_and_poll_via_curl() -> None:
 
     claim_set = resolve_payload.get("claim_set")
     job_info = resolve_payload.get("job")
+    refresh_url = resolve_payload.get("refresh_url")
 
     if claim_set is not None and job_info is None:
         assert claim_set.get("claims"), "cached claim set should contain claims"
+        assert refresh_url is None
         return
 
     assert isinstance(job_info, dict), "resolve expected to queue a background job"
     mesh_signature = compute_mesh_signature(mesh_terms)
     encoded_signature = quote(mesh_signature, safe="")
+    assert refresh_url == f"/api/claims/refresh/{encoded_signature}"
 
     timeout_seconds = float(os.getenv("INTEGRATION_POLL_TIMEOUT", "600"))
     deadline = time.time() + timeout_seconds
@@ -119,7 +122,7 @@ def test_resolve_and_poll_via_curl() -> None:
 
     while time.time() < deadline:
         time.sleep(3.0)
-        candidate = _curl_json(f"{_BASE_URL}/api/claims/refresh/{encoded_signature}")
+        candidate = _curl_json(f"{_BASE_URL}{refresh_url}")
         status = candidate.get("status")
         if status not in {"queued", "running"}:
             final_payload = candidate
@@ -135,10 +138,16 @@ def test_resolve_and_poll_via_curl() -> None:
     assert final_resolution.get("normalized_condition") == expected_normalized
     assert final_resolution.get("mesh_terms")
 
+    claim_set_slug: str | None = None
+
     if status == "completed":
         claim_set_id = final_payload.get("claim_set_id")
         assert claim_set_id, "completed job should expose a claim_set_id"
-        claim_set_payload = _curl_json(f"{_BASE_URL}/api/claims/{claim_set_id}")
+        claim_set_slug = final_payload.get("claim_set_slug")
+        assert claim_set_slug, "completed job should expose a claim_set_slug"
+        claim_set_payload = _curl_json(f"{_BASE_URL}/api/claims/{claim_set_slug}")
+        assert claim_set_payload.get("id") == claim_set_id
+        assert claim_set_payload.get("slug") == claim_set_slug
         claims = claim_set_payload.get("claims") or []
         assert claims, "processed claim set should include at least one claim"
     elif status == "no-batches":
@@ -153,13 +162,17 @@ def test_resolve_and_poll_via_curl() -> None:
 
     second_resolution = second_payload.get("resolution") or {}
     assert second_resolution.get("normalized_condition") == expected_normalized
+    second_refresh_url = second_payload.get("refresh_url")
 
     if status == "completed":
         cached_claim_set = second_payload.get("claim_set")
         assert cached_claim_set is not None, "cached resolve should return claim set"
         assert cached_claim_set.get("claims"), "cached claim set should include claims"
+        assert cached_claim_set.get("slug") == claim_set_slug
         assert second_payload.get("job") is None
         assert second_resolution.get("reused_cached") is True
+        assert second_refresh_url is None
     else:
         assert second_payload.get("claim_set") is None
         assert isinstance(second_payload.get("job"), dict), "expected follow-up job when cache empty"
+        assert second_refresh_url is not None

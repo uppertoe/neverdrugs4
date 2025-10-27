@@ -146,8 +146,10 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
             classification = (claim.get("classification") or "").strip().lower()
             if not classification:
                 continue
-            drugs = _unique_terms(claim.get("drugs") or [])
-            drug_classes = _unique_terms(claim.get("drug_classes") or [])
+            drugs, drug_classes = _normalise_claim_terms(
+                claim.get("drugs"),
+                claim.get("drug_classes"),
+            )
             key = _build_claim_key(classification, drugs, drug_classes)
 
             confidence = (claim.get("confidence") or "low").strip().lower()
@@ -185,7 +187,7 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                         notes=_clean_str(evidence.get("notes")),
                     )
 
-    return aggregated
+    return _reduce_redundant_claims(aggregated)
 
 
 def _coerce_payload(payload: object) -> dict:
@@ -211,15 +213,15 @@ def _unique_terms(terms: Iterable[str]) -> list[str]:
         cleaned = term.strip()
         if not cleaned:
             continue
-        key = cleaned.lower()
+        key = _normalize_term_key(cleaned)
         if key not in seen:
             seen[key] = cleaned
     return list(seen.values())
 
 
 def _build_claim_key(classification: str, drugs: list[str], drug_classes: list[str]) -> str:
-    drugs_key = ",".join(sorted(term.lower() for term in drugs))
-    classes_key = ",".join(sorted(term.lower() for term in drug_classes))
+    drugs_key = ",".join(sorted(_normalize_term_key(term) for term in drugs))
+    classes_key = ",".join(sorted(_normalize_term_key(term) for term in drug_classes))
     return f"{classification}|{drugs_key}|{classes_key}"
 
 
@@ -263,3 +265,213 @@ def _clean_str(value: object) -> str | None:
         cleaned = value.strip()
         return cleaned or None
     return str(value)
+
+
+def _normalise_claim_terms(
+    drugs: Iterable[str] | None,
+    drug_classes: Iterable[str] | None,
+) -> tuple[list[str], list[str]]:
+    raw_drugs = drugs or []
+    raw_classes = drug_classes or []
+    class_terms: list[str] = []
+    drug_terms: list[str] = []
+
+    for term in raw_drugs:
+        cleaned = _clean_str(term)
+        if not cleaned:
+            continue
+        if _is_generic_class_term(cleaned):
+            class_terms.append(cleaned)
+        else:
+            drug_terms.append(cleaned)
+
+    for term in raw_classes:
+        cleaned = _clean_str(term)
+        if cleaned:
+            class_terms.append(cleaned)
+
+    return _unique_terms(drug_terms), _unique_terms(class_terms)
+
+
+def _normalize_term_key(term: str) -> str:
+    value = term.strip().lower()
+    if not value:
+        return ""
+    value = value.replace("/", " ")
+    value = value.replace("-", " ")
+    value = value.replace("_", " ")
+    value = value.replace("anaesthetic", "anesthetic")
+    value = value.replace("anaesthetics", "anesthetics")
+    value = value.replace("  ", " ")
+    value = " ".join(value.split())
+    if value.endswith("s") and len(value) > 4 and " " in value and not value.endswith(("ss", "us")):
+        value = value[:-1]
+    return value
+
+
+_GENERIC_SINGLE_WORDS = {
+    "agent",
+    "agents",
+    "class",
+    "drug",
+    "drugs",
+    "therapy",
+    "treatment",
+    "use",
+    "usage",
+    "volatile",
+    "neuromuscular",
+    "anesthetic",
+    "anesthetics",
+}
+
+_GENERIC_KEYWORDS = {
+    "agent",
+    "agents",
+    "class",
+    "classes",
+    "therapy",
+    "therapies",
+    "treatment",
+    "treatments",
+    "blocker",
+    "blockers",
+    "blocking",
+    "relaxant",
+    "relaxants",
+    "anesthetic",
+    "anesthetics",
+    "anaesthetic",
+    "anaesthetics",
+    "inhalational",
+    "volatile",
+    "modulator",
+    "modulators",
+    "myorelaxant",
+    "myorelaxants",
+}
+
+_GENERIC_PHRASES = {
+    "mh therapy",
+    "mh treatment",
+    "mh trigger",
+    "mh triggering agent",
+    "generic class",
+    "generic-class",
+}
+
+
+def _is_generic_class_term(term: str) -> bool:
+    slug = _normalize_term_key(term)
+    if not slug:
+        return True
+    if slug in _GENERIC_PHRASES:
+        return True
+    tokens = slug.split()
+    if len(tokens) == 1:
+        return slug in _GENERIC_SINGLE_WORDS
+    return any(token in _GENERIC_KEYWORDS for token in tokens)
+
+
+_TOKEN_NORMALISER = {
+    "blocking": "block",
+    "blocker": "block",
+    "blockers": "block",
+    "relaxants": "relaxant",
+    "anesthetics": "anesthetic",
+    "anaesthetic": "anesthetic",
+    "anaesthetics": "anesthetic",
+}
+
+_GENERIC_TOKEN_SKIP = {
+    "agent",
+    "agents",
+    "class",
+    "classes",
+    "therapy",
+    "therapies",
+    "treatment",
+    "treatments",
+    "drug",
+    "drugs",
+    "use",
+    "usage",
+}
+
+
+def _normalize_token(token: str) -> str:
+    if not token:
+        return ""
+    value = token.lower().strip()
+    if not value:
+        return ""
+    value = value.replace("anaesthet", "anesthet")
+    value = _TOKEN_NORMALISER.get(value, value)
+    if value.endswith("s") and len(value) > 4 and not value.endswith("ss"):
+        value = value[:-1]
+    value = _TOKEN_NORMALISER.get(value, value)
+    return value
+
+
+def _claim_has_specific_drug(claim: _AggregatedClaim) -> bool:
+    for term in claim.drugs:
+        if not _is_generic_class_term(term):
+            return True
+    return False
+
+
+def _claim_term_tokens(claim: _AggregatedClaim) -> set[str]:
+    tokens: set[str] = set()
+    for term in list(claim.drug_classes) + list(claim.drugs):
+        slug = _normalize_term_key(term)
+        if slug:
+            tokens.add(slug)
+        for raw in slug.split():
+            token = _normalize_token(raw)
+            if token and token not in _GENERIC_TOKEN_SKIP:
+                tokens.add(token)
+    return tokens
+
+
+def _reduce_redundant_claims(
+    aggregated: "OrderedDict[str, _AggregatedClaim]",
+) -> "OrderedDict[str, _AggregatedClaim]":
+    if not aggregated:
+        return aggregated
+
+    grouped: dict[str, list[tuple[str, _AggregatedClaim]]] = {}
+    for key, claim in aggregated.items():
+        grouped.setdefault(claim.classification, []).append((key, claim))
+
+    keys_to_remove: set[str] = set()
+
+    for items in grouped.values():
+        specific_tokens: list[set[str]] = []
+        for key, claim in items:
+            if _claim_has_specific_drug(claim):
+                tokens = _claim_term_tokens(claim)
+                if tokens:
+                    specific_tokens.append(tokens)
+
+        if not specific_tokens:
+            continue
+
+        combined_specific_tokens = set().union(*specific_tokens)
+        if not combined_specific_tokens:
+            continue
+
+        for key, claim in items:
+            if key in keys_to_remove:
+                continue
+            if _claim_has_specific_drug(claim):
+                continue
+            claim_tokens = _claim_term_tokens(claim)
+            if not claim_tokens:
+                keys_to_remove.add(key)
+            elif claim_tokens & combined_specific_tokens:
+                keys_to_remove.add(key)
+
+    if not keys_to_remove:
+        return aggregated
+
+    return OrderedDict((key, claim) for key, claim in aggregated.items() if key not in keys_to_remove)

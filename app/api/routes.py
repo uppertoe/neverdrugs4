@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from flask import Blueprint, current_app, jsonify, g, request
 from sqlalchemy import select
 
-from app.models import ClaimSetRefresh, ProcessedClaim, ProcessedClaimDrugLink, ProcessedClaimEvidence, ProcessedClaimSet
+from app.models import (
+    ArticleArtefact,
+    ArticleSnippet,
+    ClaimSetRefresh,
+    ProcessedClaim,
+    ProcessedClaimDrugLink,
+    ProcessedClaimEvidence,
+    ProcessedClaimSet,
+    SearchArtefact,
+    SearchTerm,
+)
 from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from app.services.search import compute_mesh_signature
 from app.tasks import refresh_claims_for_condition
@@ -25,9 +35,24 @@ def _get_db_session():
     return session
 
 
+def _load_claim_set(session, ref: str) -> ProcessedClaimSet | None:
+    if ref.isdigit():
+        return session.get(ProcessedClaimSet, int(ref))
+    stmt = select(ProcessedClaimSet).where(ProcessedClaimSet.slug == ref)
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def _load_search_term(session, ref: str) -> SearchTerm | None:
+    if ref.isdigit():
+        return session.get(SearchTerm, int(ref))
+    stmt = select(SearchTerm).where(SearchTerm.slug == ref)
+    return session.execute(stmt).scalar_one_or_none()
+
+
 def _serialise_claim_set(claim_set: ProcessedClaimSet) -> dict:
     return {
         "id": claim_set.id,
+        "slug": claim_set.slug,
         "mesh_signature": claim_set.mesh_signature,
         "condition_label": claim_set.condition_label,
         "claims": [_serialise_claim(claim) for claim in sorted(claim_set.claims, key=lambda c: c.id)],
@@ -80,16 +105,6 @@ def _mesh_terms_from_signature(signature: str | None) -> list[str]:
         return []
     parts = [part.strip() for part in signature.split("|") if part.strip()]
     return [part.title() for part in parts]
-
-
-def _coerce_truthy(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(value, (int, float)):
-        return value != 0
-    return False
 
 
 def _build_resolution_snapshot(
@@ -183,15 +198,16 @@ def _serialise_refresh_job(
             "details": progress_details,
         },
         "claim_set_id": claim_set.id if claim_set else None,
+        "claim_set_slug": claim_set.slug if claim_set else None,
         "resolution": _build_resolution_snapshot(refresh, claim_set, progress_details),
         "can_retry": _refresh_can_retry(refresh) or _refresh_is_stale(refresh),
     }
 
 
-@api_blueprint.get("/claims/<int:claim_set_id>")
-def get_processed_claim(claim_set_id: int):
+@api_blueprint.get("/claims/<string:claim_set_ref>")
+def get_processed_claim(claim_set_ref: str):
     session = _get_db_session()
-    claim_set = session.get(ProcessedClaimSet, claim_set_id)
+    claim_set = _load_claim_set(session, claim_set_ref)
     if claim_set is None:
         return jsonify({"detail": "Processed claim set not found"}), 404
 
@@ -207,8 +223,8 @@ def get_refresh_status(mesh_signature: str):
     refresh_job = session.execute(stmt).scalar_one_or_none()
     claim_set: ProcessedClaimSet | None = None
 
-    if refresh_job is None and decoded_signature.isdigit():
-        claim_set = session.get(ProcessedClaimSet, int(decoded_signature))
+    if refresh_job is None:
+        claim_set = _load_claim_set(session, decoded_signature)
         if claim_set is not None:
             stmt = select(ClaimSetRefresh).where(ClaimSetRefresh.mesh_signature == claim_set.mesh_signature)
             refresh_job = session.execute(stmt).scalar_one_or_none()
@@ -251,8 +267,6 @@ def resolve_claims():
             422,
         )
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
-    force_refresh = _coerce_truthy(body.get("force_refresh"))
-
     claim_set: ProcessedClaimSet | None = None
     refresh_job: ClaimSetRefresh | None = None
     if mesh_signature:
@@ -263,60 +277,57 @@ def resolve_claims():
         stmt = select(ProcessedClaimSet).where(ProcessedClaimSet.mesh_signature == mesh_signature)
         claim_set = session.execute(stmt).scalar_one_or_none()
 
-    status_code = 200
     job_info: dict[str, object] | None = None
-    needs_refresh = force_refresh or claim_set is None
+    refresh_url: str | None = None
+    should_enqueue = False
+    need_claim_set = claim_set is None
+    resolved_signature = mesh_signature or compute_mesh_signature(list(resolution.mesh_terms))
 
-    if needs_refresh:
-        should_enqueue = False
-        if refresh_job is None:
-            should_enqueue = True
-        else:
-            if force_refresh:
-                should_enqueue = True
-            elif _refresh_can_retry(refresh_job):
-                should_enqueue = True
-            elif _refresh_is_stale(refresh_job):
-                should_enqueue = True
+    if not mesh_signature:
+        should_enqueue = True
+    elif refresh_job is None:
+        should_enqueue = need_claim_set
+    elif _refresh_can_retry(refresh_job) or _refresh_is_stale(refresh_job):
+        should_enqueue = True
 
-        if should_enqueue:
-            try:
-                job_info = enqueue_claim_pipeline(
-                    session=session,
-                    resolution=resolution,
-                    condition_label=condition,
+    if should_enqueue:
+        try:
+            job_info = enqueue_claim_pipeline(
+                session=session,
+                resolution=resolution,
+                condition_label=condition,
+                mesh_signature=mesh_signature,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface enqueue failures
+            current_app.logger.exception(
+                "Failed to queue background refresh",
+                extra={"condition": condition, "mesh_signature": mesh_signature},
+            )
+            return jsonify({"detail": "Failed to queue background refresh"}), 503
+
+        if mesh_signature:
+            if refresh_job is None:
+                refresh_job = ClaimSetRefresh(
                     mesh_signature=mesh_signature,
+                    job_id=str(job_info.get("job_id", "")),
+                    status=str(job_info.get("status", "queued")),
+                    progress_state="queued",
+                    progress_payload={},
                 )
-            except Exception as exc:  # noqa: BLE001 - surface enqueue failures
-                current_app.logger.exception(
-                    "Failed to queue background refresh",
-                    extra={"condition": condition, "mesh_signature": mesh_signature},
-                )
-                return jsonify({"detail": "Failed to queue background refresh"}), 503
-
-            if mesh_signature:
-                if refresh_job is None:
-                    refresh_job = ClaimSetRefresh(
-                        mesh_signature=mesh_signature,
-                        job_id=str(job_info.get("job_id", "")),
-                        status=str(job_info.get("status", "queued")),
-                        progress_state="queued",
-                        progress_payload={},
-                    )
-                    session.add(refresh_job)
-                else:
-                    refresh_job.job_id = str(job_info.get("job_id", ""))
-                    refresh_job.status = str(job_info.get("status", "queued"))
-                    refresh_job.error_message = None
-                    refresh_job.progress_state = "queued"
-                    refresh_job.progress_payload = {}
-        elif refresh_job is not None:
-            job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
-
-        status_code = 202
+                session.add(refresh_job)
+            else:
+                refresh_job.job_id = str(job_info.get("job_id", ""))
+                refresh_job.status = str(job_info.get("status", "queued"))
+                refresh_job.error_message = None
+                refresh_job.progress_state = "queued"
+                refresh_job.progress_payload = {}
+        if resolved_signature:
+            refresh_url = f"/api/claims/refresh/{quote(resolved_signature, safe='')}"
     elif refresh_job is not None and refresh_job.status in {"queued", "running"}:
         job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
-        status_code = 202
+        signature_for_url = refresh_job.mesh_signature or resolved_signature
+        if signature_for_url:
+            refresh_url = f"/api/claims/refresh/{quote(signature_for_url, safe='')}"
 
     response_payload = {
         "resolution": {
@@ -329,7 +340,10 @@ def resolve_claims():
         "job": job_info,
     }
 
-    return jsonify(response_payload), status_code
+    if refresh_url and job_info is not None:
+        response_payload["refresh_url"] = refresh_url
+
+    return jsonify(response_payload), 200
 
 
 def enqueue_claim_pipeline(
@@ -353,3 +367,130 @@ def enqueue_claim_pipeline(
         "job_id": async_result.id,
         "status": "queued",
     }
+
+
+@api_blueprint.get("/search/<string:search_term_ref>/query")
+def get_search_query(search_term_ref: str):
+    session = _get_db_session()
+    term = _load_search_term(session, search_term_ref)
+    if term is None:
+        return jsonify({"detail": "Search term not found"}), 404
+
+    artefact_stmt = (
+        select(SearchArtefact)
+        .where(SearchArtefact.search_term_id == term.id)
+        .order_by(SearchArtefact.last_refreshed_at.desc(), SearchArtefact.created_at.desc())
+        .limit(1)
+    )
+    artefact = session.execute(artefact_stmt).scalar_one_or_none()
+    if artefact is None:
+        return jsonify({"detail": "Search query not available"}), 404
+
+    payload = artefact.query_payload if isinstance(artefact.query_payload, dict) else {}
+    esearch_payload = payload.get("esearch") if isinstance(payload.get("esearch"), dict) else {}
+    query = esearch_payload.get("query")
+
+    return (
+        jsonify(
+            {
+                "search_term_id": term.id,
+                "search_term_slug": term.slug,
+                "canonical_condition": term.canonical,
+                "mesh_terms": list(artefact.mesh_terms),
+                "mesh_signature": artefact.mesh_signature,
+                "query": query,
+                "query_payload": payload,
+                "result_signature": artefact.result_signature,
+                "last_refreshed_at": artefact.last_refreshed_at.isoformat()
+                if artefact.last_refreshed_at
+                else None,
+            }
+        ),
+        200,
+    )
+
+
+@api_blueprint.get("/search/<string:search_term_ref>/articles")
+def get_search_articles(search_term_ref: str):
+    session = _get_db_session()
+    term = _load_search_term(session, search_term_ref)
+    if term is None:
+        return jsonify({"detail": "Search term not found"}), 404
+
+    articles_stmt = (
+        select(ArticleArtefact)
+        .where(ArticleArtefact.search_term_id == term.id)
+        .order_by(ArticleArtefact.rank.asc())
+    )
+    articles = session.execute(articles_stmt).scalars().all()
+
+    items: list[dict[str, object]] = []
+    for article in articles:
+        citation = article.citation if isinstance(article.citation, dict) else {}
+        items.append(
+            {
+                "pmid": article.pmid,
+                "rank": article.rank,
+                "score": article.score,
+                "citation": citation,
+                "preferred_url": citation.get("preferred_url") if isinstance(citation, dict) else None,
+                "content_source": article.content_source,
+                "retrieved_at": article.retrieved_at.isoformat() if article.retrieved_at else None,
+            }
+        )
+
+    return (
+        jsonify(
+            {
+                "search_term_id": term.id,
+                "search_term_slug": term.slug,
+                "canonical_condition": term.canonical,
+                "articles": items,
+            }
+        ),
+        200,
+    )
+
+
+@api_blueprint.get("/search/<string:search_term_ref>/snippets")
+def get_search_snippets(search_term_ref: str):
+    session = _get_db_session()
+    term = _load_search_term(session, search_term_ref)
+    if term is None:
+        return jsonify({"detail": "Search term not found"}), 404
+
+    snippet_stmt = (
+        select(ArticleSnippet, ArticleArtefact)
+        .join(ArticleArtefact, ArticleSnippet.article_artefact_id == ArticleArtefact.id)
+        .where(ArticleArtefact.search_term_id == term.id)
+        .order_by(ArticleArtefact.rank.asc(), ArticleSnippet.id.asc())
+    )
+    rows = session.execute(snippet_stmt).all()
+
+    snippets: list[dict[str, object]] = []
+    for snippet, article in rows:
+        snippets.append(
+            {
+                "snippet_id": snippet.id,
+                "pmid": article.pmid,
+                "article_rank": article.rank,
+                "drug": snippet.drug,
+                "classification": snippet.classification,
+                "snippet_text": snippet.snippet_text,
+                "snippet_score": snippet.snippet_score,
+                "cues": list(snippet.cues or []),
+                "snippet_hash": snippet.snippet_hash,
+            }
+        )
+
+    return (
+        jsonify(
+            {
+                "search_term_id": term.id,
+                "search_term_slug": term.slug,
+                "canonical_condition": term.canonical,
+                "snippets": snippets,
+            }
+        ),
+        200,
+    )

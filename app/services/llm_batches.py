@@ -10,8 +10,11 @@ from app.models import ArticleArtefact
 from app.services.claims import ClaimEvidenceGroup, group_snippets_for_claims
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are a clinical evidence synthesis assistant. reason carefully about causality and therapeutic intent before classifying a claim. "
-    "Use only the provided snippets and claim groups, cite every snippet you rely on, and avoid inferring new facts."
+    "You are a clinical evidence synthesis assistant. Before classifying a claim, begin with a concise checklist (3-7 bullets) outlining the tasks you will perform, focusing on analyzing causality and therapeutic intent. "
+    "Carefully analyze causality and therapeutic intent before classifying a claim. "
+    "Rely exclusively on the provided snippets and claim groups, citing every snippet you use. "
+    "After each classification, validate the decision in 1-2 lines against the cited snippets and proceed or self-correct if the validation fails. "
+    "Do not infer any new facts beyond those explicitly presented. "
 )
 _PROMPT_OVERHEAD_TOKENS = 220
 _SNIPPET_METADATA_TOKENS = 18
@@ -344,7 +347,7 @@ def _render_user_prompt(
         joined_labels = "; ".join(caution_labels)
         caution_section = (
             "CAUTION\n"
-            f"The following claim groups are a broad drug category; prioritise specific named drugs when evidence supports them: {joined_labels}.\n\n"
+            f"The following claim groups are an overly broad drug category; strongly prioritise specific named drugs when evidence supports them: {joined_labels}.\n\n"
         )
 
     return (
@@ -366,9 +369,10 @@ def _render_user_prompt(
         "4. If snippets conflict, create separate claims and explain the disagreement in the summaries/notes.\n"
         "5. Classification must be risk, safety, or uncertain. Use uncertain when evidence is mixed or insufficient.\n"
         "6. Provide short key_points (1–2 sentences) explaining the rationale drawn from each snippet.\n"
-        "7. Confidence should reflect strength and agreement of evidence.\n"
+        "7. Confidence should reflect strength and agreement of overall evidence, including that from other snippets provided.\n"
         "8. Do not introduce new drugs or facts not present in the snippets.\n"
-        "9. Return only valid JSON matching the schema below.\n\n"
+        "9. Return only valid JSON matching the schema below.\n"
+        "10. Using the weight of the evidence from other snippets to inform your decision is permitted; overly general statements may be superseded by more specific statements from other sources. \n\n"
         "SCHEMA\n"
         f"{schema_block}\n"
         "SAMPLE RESPONSE\n"

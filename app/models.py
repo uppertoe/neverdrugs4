@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
+from app.utils.slugs import build_claim_set_slug, build_search_term_slug
 
 
 class SearchTerm(Base):
@@ -15,6 +16,7 @@ class SearchTerm(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     canonical: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(256), unique=True, index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), nullable=False
     )
@@ -145,6 +147,7 @@ class ProcessedClaimSet(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mesh_signature: Mapped[str] = mapped_column(String(512), unique=True, index=True, nullable=False)
     condition_label: Mapped[str] = mapped_column(String(512), nullable=False)
+    slug: Mapped[str] = mapped_column(String(256), unique=True, index=True, nullable=False)
     last_search_term_id: Mapped[int | None] = mapped_column(ForeignKey("search_terms.id"), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), nullable=False
@@ -232,3 +235,31 @@ class ProcessedClaimDrugLink(Base):
     __table_args__ = (
         UniqueConstraint("claim_id", "term", "term_kind", name="uq_claim_term_kind"),
     )
+
+
+@event.listens_for(SearchTerm, "before_insert")
+def _assign_search_term_slug(_mapper, _connection, target: SearchTerm) -> None:
+    if getattr(target, "slug", None):
+        return
+    target.slug = build_search_term_slug(target.canonical)
+
+
+@event.listens_for(SearchTerm, "before_update")
+def _ensure_search_term_slug_on_update(_mapper, _connection, target: SearchTerm) -> None:
+    if getattr(target, "slug", None):
+        return
+    target.slug = build_search_term_slug(target.canonical)
+
+
+@event.listens_for(ProcessedClaimSet, "before_insert")
+def _assign_claim_set_slug(_mapper, _connection, target: ProcessedClaimSet) -> None:
+    if getattr(target, "slug", None):
+        return
+    target.slug = build_claim_set_slug(target.condition_label, target.mesh_signature)
+
+
+@event.listens_for(ProcessedClaimSet, "before_update")
+def _ensure_claim_set_slug_on_update(_mapper, _connection, target: ProcessedClaimSet) -> None:
+    if getattr(target, "slug", None):
+        return
+    target.slug = build_claim_set_slug(target.condition_label, target.mesh_signature)

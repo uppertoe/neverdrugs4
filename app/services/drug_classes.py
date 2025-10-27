@@ -18,9 +18,15 @@ _VOLATILE_ANESTHETICS = (
     "isoflurane",
     "enflurane",
     "halothane",
+    "methoxyflurane",
     "volatile",
+    "volatiles",
+    "volatile agent",
+    "volatile agents",
     "volatile anesthetic",
     "volatile anaesthetic",
+    "volatile anesthetics",
+    "volatile anaesthetics",
 )
 
 _DEPOLARISING_BLOCKERS = (
@@ -42,8 +48,16 @@ _NON_DEPOLARISING_BLOCKERS = (
 _GENERAL_NEUROMUSCULAR = (
     "neuromuscular",
     "neuromuscular blocker",
+    "neuromuscular blockers",
     "neuromuscular blocking agent",
     "neuromuscular blocking agents",
+    "neuromuscular blocking drug",
+    "neuromuscular blocking drugs",
+    "nmdb",
+    "paralytic agent",
+    "paralytic agents",
+    "paralytic drug",
+    "paralytic drugs",
     "muscle relaxant",
     "muscle relaxants",
 )

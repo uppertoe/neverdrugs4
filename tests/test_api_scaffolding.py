@@ -8,11 +8,15 @@ from urllib.parse import quote
 from sqlalchemy import select
 
 from app.models import (
+    ArticleArtefact,
+    ArticleSnippet,
     ClaimSetRefresh,
     ProcessedClaim,
     ProcessedClaimDrugLink,
     ProcessedClaimEvidence,
     ProcessedClaimSet,
+    SearchArtefact,
+    SearchTerm,
 )
 from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution, compute_mesh_signature
@@ -30,6 +34,7 @@ def _seed_processed_claim_set(
     )
     session.add(claim_set)
     session.flush()
+    session.refresh(claim_set)
 
     claim = ProcessedClaim(
         claim_set_id=claim_set.id,
@@ -78,6 +83,7 @@ def test_get_processed_claim_returns_serialised_payload(client, session):
     payload = response.get_json()
 
     assert payload["id"] == claim_set.id
+    assert payload["slug"] == claim_set.slug
     assert payload["condition_label"] == "King Denborough syndrome"
     assert payload["mesh_signature"] == "king-denborough|anesthesia"
     assert payload["claims"]
@@ -106,6 +112,17 @@ def test_get_processed_claim_returns_404_when_missing(client):
     assert response.status_code == 404
     payload = response.get_json()
     assert payload == {"detail": "Processed claim set not found"}
+
+
+def test_get_processed_claim_allows_slug_lookup(client, session):
+    claim_set = _seed_processed_claim_set(session)
+
+    response = client.get(f"/api/claims/{claim_set.slug}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["id"] == claim_set.id
+    assert payload["slug"] == claim_set.slug
 
 
 @patch("app.api.routes.resolve_condition_via_nih")
@@ -143,6 +160,7 @@ def test_resolve_claims_returns_cached_set_when_available(
     payload = response.get_json()
 
     assert payload["claim_set"]
+    assert payload["claim_set"]["slug"].startswith("duchenne")
     assert payload["job"] is None
     assert payload["resolution"] == {
         "normalized_condition": resolution.normalized_condition,
@@ -169,6 +187,7 @@ def test_resolve_claims_schedules_refresh_job(
         search_term_id=7,
     )
     resolve_mock.return_value = resolution
+    mesh_signature = compute_mesh_signature(resolution.mesh_terms)
     enqueue_mock.return_value = {
         "job_id": "task-123",
         "status": "queued",
@@ -179,10 +198,12 @@ def test_resolve_claims_schedules_refresh_job(
         json={"condition": "Duchenne"},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     payload = response.get_json()
 
     assert payload["job"] == {"job_id": "task-123", "status": "queued"}
+    encoded_signature = quote(mesh_signature, safe="")
+    assert payload["refresh_url"] == f"/api/claims/refresh/{encoded_signature}"
     assert payload["claim_set"] is None
     assert payload["resolution"] == {
         "normalized_condition": resolution.normalized_condition,
@@ -320,15 +341,17 @@ def test_resolve_claims_reuses_existing_refresh_job(
         json={"condition": "Duchenne"},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     payload = response.get_json()
+    encoded_signature = quote(mesh_signature, safe="")
     assert payload["job"] == {"job_id": "task-321", "status": "running"}
+    assert payload["refresh_url"] == f"/api/claims/refresh/{encoded_signature}"
     enqueue_mock.assert_not_called()
 
 
 @patch("app.api.routes.resolve_condition_via_nih")
 @patch("app.api.routes.enqueue_claim_pipeline")
-def test_resolve_claims_force_refresh_requeues_existing_job(
+def test_resolve_claims_ignores_force_refresh_parameter(
     enqueue_mock,
     resolve_mock,
     client,
@@ -352,31 +375,22 @@ def test_resolve_claims_force_refresh_requeues_existing_job(
     session.add(refresh)
     session.flush()
 
-    enqueue_mock.return_value = {
-        "job_id": "task-new",
-        "status": "queued",
-    }
-
     response = client.post(
         "/api/claims/resolve",
         json={"condition": "Duchenne", "force_refresh": True},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     payload = response.get_json()
-    assert payload["job"] == {"job_id": "task-new", "status": "queued"}
-    enqueue_mock.assert_called_once()
-
-    session.refresh(refresh)
-    assert refresh.job_id == "task-new"
-    assert refresh.status == "queued"
-    assert refresh.progress_state == "queued"
-    assert refresh.progress_payload == {}
+    encoded_signature = quote(mesh_signature, safe="")
+    assert payload["job"] == {"job_id": "task-original", "status": "running"}
+    assert payload["refresh_url"] == f"/api/claims/refresh/{encoded_signature}"
+    enqueue_mock.assert_not_called()
 
 
 @patch("app.api.routes.resolve_condition_via_nih")
 @patch("app.api.routes.enqueue_claim_pipeline")
-def test_resolve_claims_force_refresh_with_existing_claim_set(
+def test_resolve_claims_returns_cached_when_refresh_missing(
     enqueue_mock,
     resolve_mock,
     client,
@@ -396,25 +410,22 @@ def test_resolve_claims_force_refresh_with_existing_claim_set(
         condition_label="Duchenne",
     )
 
-    enqueue_mock.return_value = {"job_id": "task-refresh", "status": "queued"}
-
     response = client.post(
         "/api/claims/resolve",
-        json={"condition": "Duchenne", "force_refresh": True},
+        json={"condition": "Duchenne"},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     payload = response.get_json()
     assert payload["claim_set"]["id"] == claim_set.id
-    assert payload["job"] == {"job_id": "task-refresh", "status": "queued"}
-    enqueue_mock.assert_called_once()
+    assert payload["job"] is None
+    assert "refresh_url" not in payload
+    enqueue_mock.assert_not_called()
 
     refresh_record = session.execute(
         select(ClaimSetRefresh).where(ClaimSetRefresh.mesh_signature == mesh_signature)
-    ).scalar_one()
-    assert refresh_record.job_id == "task-refresh"
-    assert refresh_record.status == "queued"
-    assert refresh_record.progress_state == "queued"
+    ).scalar_one_or_none()
+    assert refresh_record is None
 
 
 @patch("app.api.routes.resolve_condition_via_nih")
@@ -455,16 +466,237 @@ def test_resolve_claims_requeues_stale_job(
         json={"condition": "Duchenne"},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     payload = response.get_json()
     assert payload["job"] == {"job_id": "task-refreshed", "status": "queued"}
+    encoded_signature = quote(mesh_signature, safe="")
+    assert payload["refresh_url"] == f"/api/claims/refresh/{encoded_signature}"
     enqueue_mock.assert_called_once()
 
     session.refresh(refresh)
     assert refresh.job_id == "task-refreshed"
     assert refresh.status == "queued"
     assert refresh.progress_state == "queued"
-    assert refresh.progress_payload == {}
+
+
+def _seed_search_term_with_artefact(session) -> tuple[SearchTerm, SearchArtefact]:
+    term = SearchTerm(canonical="duchenne muscular dystrophy")
+    session.add(term)
+    session.flush()
+    session.refresh(term)
+
+    artefact = SearchArtefact(
+        search_term_id=term.id,
+        query_payload={
+            "normalized_query": "duchenne muscular dystrophy",
+            "esearch": {
+                "ids": ["68020388"],
+                "translation": None,
+                "primary_id": "68020388",
+                "query": "\"Duchenne Muscular Dystrophy\"[MeSH Terms]",
+            },
+            "esummary": {
+                "primary_id": "68020388",
+                "mesh_terms": ["Duchenne Muscular Dystrophy"],
+            },
+        },
+        mesh_terms=["Duchenne Muscular Dystrophy"],
+        mesh_signature="duchenne-muscular-dystrophy",
+        result_signature="hash123",
+        ttl_policy_seconds=86_400,
+        last_refreshed_at=datetime.now(timezone.utc),
+    )
+    session.add(artefact)
+    session.flush()
+
+    return term, artefact
+
+
+def _seed_articles_with_snippets(session, term: SearchTerm) -> tuple[ArticleArtefact, ArticleArtefact]:
+    first_article = ArticleArtefact(
+        search_term_id=term.id,
+        pmid="11111111",
+        rank=0,
+        score=2.5,
+        citation={
+            "pmid": "11111111",
+            "title": "Breakthrough in Duchenne",
+            "preferred_url": "https://pubmed.ncbi.nlm.nih.gov/11111111/",
+        },
+        content_source="abstract",
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    second_article = ArticleArtefact(
+        search_term_id=term.id,
+        pmid="22222222",
+        rank=1,
+        score=1.7,
+        citation={
+            "pmid": "22222222",
+            "title": "Review of Duchenne therapies",
+            "preferred_url": "https://pubmed.ncbi.nlm.nih.gov/22222222/",
+        },
+        content_source="pmc",
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    session.add_all([first_article, second_article])
+    session.flush()
+
+    snippet = ArticleSnippet(
+        article_artefact_id=first_article.id,
+        snippet_hash="hash-snippet",
+        drug="eteplirsen",
+        classification="support",
+        snippet_text="Eteplirsen shows improved dystrophin levels.",
+        snippet_score=0.91,
+        cues=["increased dystrophin"],
+    )
+    session.add(snippet)
+    session.flush()
+
+    return first_article, second_article
+
+
+def test_get_search_query_returns_payload(client, session):
+    term, artefact = _seed_search_term_with_artefact(session)
+
+    response = client.get(f"/api/search/{term.id}/query")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+    assert payload["mesh_terms"] == artefact.mesh_terms
+    assert payload["query"].startswith("\"Duchenne Muscular Dystrophy\"")
+    assert payload["query_payload"]["esearch"]["primary_id"] == "68020388"
+
+
+def test_get_search_query_accepts_slug_lookup(client, session):
+    term, artefact = _seed_search_term_with_artefact(session)
+
+    response = client.get(f"/api/search/{term.slug}/query")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+    assert payload["mesh_terms"] == artefact.mesh_terms
+
+
+def test_get_search_query_returns_404_for_missing_term(client):
+    response = client.get("/api/search/999/query")
+
+    assert response.status_code == 404
+    assert response.get_json() == {"detail": "Search term not found"}
+
+
+def test_get_search_query_returns_404_when_no_artefact(client, session):
+    term = SearchTerm(canonical="central core disease")
+    session.add(term)
+    session.flush()
+    session.refresh(term)
+
+    response = client.get(f"/api/search/{term.id}/query")
+
+    assert response.status_code == 404
+    assert response.get_json()["detail"] == "Search query not available"
+
+
+def test_get_search_articles_returns_ordered_list(client, session):
+    term, _ = _seed_search_term_with_artefact(session)
+    _seed_articles_with_snippets(session, term)
+
+    response = client.get(f"/api/search/{term.id}/articles")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+    articles = payload["articles"]
+    assert [article["pmid"] for article in articles] == ["11111111", "22222222"]
+    assert articles[0]["preferred_url"].endswith("11111111/")
+
+
+def test_get_search_articles_accepts_slug_lookup(client, session):
+    term, _ = _seed_search_term_with_artefact(session)
+    _seed_articles_with_snippets(session, term)
+
+    response = client.get(f"/api/search/{term.slug}/articles")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+
+
+def test_get_search_articles_returns_empty_collection(client, session):
+    term = SearchTerm(canonical="rare disorder")
+    session.add(term)
+    session.flush()
+    session.refresh(term)
+    session.add(
+        SearchArtefact(
+            search_term_id=term.id,
+            query_payload={},
+            mesh_terms=[],
+            mesh_signature="",
+            result_signature=None,
+            ttl_policy_seconds=86_400,
+        )
+    )
+    session.flush()
+
+    response = client.get(f"/api/search/{term.id}/articles")
+
+    assert response.status_code == 200
+    assert response.get_json()["articles"] == []
+
+
+def test_get_search_snippets_returns_payload(client, session):
+    term, _ = _seed_search_term_with_artefact(session)
+    first_article, second_article = _seed_articles_with_snippets(session, term)
+    # add snippet on second article to ensure ordering by article rank
+    session.add(
+        ArticleSnippet(
+            article_artefact_id=second_article.id,
+            snippet_hash="hash-second",
+            drug="ataluren",
+            classification="neutral",
+            snippet_text="Ataluren shows mixed outcomes.",
+            snippet_score=0.6,
+            cues=["variable response"],
+        )
+    )
+    session.flush()
+
+    response = client.get(f"/api/search/{term.id}/snippets")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+    snippets = payload["snippets"]
+    assert [snippet["pmid"] for snippet in snippets] == ["11111111", "22222222"]
+    assert snippets[0]["drug"] == "eteplirsen"
+    assert snippets[1]["drug"] == "ataluren"
+
+
+def test_get_search_snippets_accepts_slug_lookup(client, session):
+    term, _ = _seed_search_term_with_artefact(session)
+    _seed_articles_with_snippets(session, term)
+
+    response = client.get(f"/api/search/{term.slug}/snippets")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["search_term_id"] == term.id
+    assert payload["search_term_slug"] == term.slug
+
+def test_get_search_snippets_returns_404_for_missing_term(client):
+    response = client.get("/api/search/123/snippets")
+
+    assert response.status_code == 404
+    assert response.get_json() == {"detail": "Search term not found"}
 
 
 @patch("app.api.routes.resolve_condition_via_nih")
@@ -517,6 +749,7 @@ def test_get_refresh_status_returns_job_metadata(client, session):
     assert payload["status"] == "running"
     assert payload["error_message"] == "processing"
     assert payload["claim_set_id"] is None
+    assert payload.get("claim_set_slug") is None
     assert payload["created_at"]
     assert payload["updated_at"]
     assert payload["progress"] == {
@@ -547,6 +780,7 @@ def test_get_refresh_status_includes_claim_set_id_when_ready(client, session):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["claim_set_id"] == claim_set.id
+    assert payload["claim_set_slug"] == claim_set.slug
     assert payload["status"] == "completed"
     assert payload["job_id"] == "task-456"
     assert payload["progress"]["stage"] == "completed"
@@ -585,7 +819,35 @@ def test_get_refresh_status_accepts_claim_set_id_lookup(client, session):
     payload = response.get_json()
     assert payload["mesh_signature"] == mesh_signature
     assert payload["claim_set_id"] == claim_set.id
+    assert payload["claim_set_slug"] == claim_set.slug
     assert payload["job_id"] == "task-789"
+
+
+def test_get_refresh_status_accepts_claim_set_slug_lookup(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    claim_set = _seed_processed_claim_set(
+        session,
+        mesh_signature=mesh_signature,
+        condition_label="Duchenne",
+    )
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-987",
+        status="running",
+        progress_state="running",
+        progress_payload={},
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{claim_set.slug}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["mesh_signature"] == mesh_signature
+    assert payload["claim_set_id"] == claim_set.id
+    assert payload["claim_set_slug"] == claim_set.slug
+    assert payload["job_id"] == "task-987"
 
 
 def test_get_refresh_status_exposes_failure_details(client, session):
