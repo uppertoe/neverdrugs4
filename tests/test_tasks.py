@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from app.models import ClaimSetRefresh
+from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution
 from app.tasks import refresh_claims_for_condition
 
@@ -120,3 +122,49 @@ def test_refresh_claims_returns_no_batches_after_collection(
     collect_articles_mock.assert_called_once()
     build_batches_mock.assert_called_once()
     openai_client_cls_mock.assert_not_called()
+
+
+@patch("app.tasks.collect_pubmed_articles")
+@patch("app.tasks.resolve_condition_via_nih")
+@patch("app.tasks.create_session_factory")
+@patch("app.tasks.load_settings", side_effect=_settings_stub)
+@pytest.mark.usefixtures("seeded_refresh")
+def test_refresh_claims_skips_when_mesh_terms_missing(
+    load_settings_mock,
+    session_factory_mock,
+    resolve_condition_mock,
+    collect_articles_mock,
+    session_factory,
+):
+    session_factory_mock.return_value = session_factory
+    resolve_condition_mock.side_effect = MeshTermsNotFoundError(
+        normalized_condition="unknown", search_term_id=303, suggestions=["foo", "bar"]
+    )
+
+    result = refresh_claims_for_condition.apply(
+        task_id="test-task-id",
+        kwargs={
+            "resolution_id": 3,
+            "condition_label": "Unknown",
+            "normalized_condition": "unknown",
+            "mesh_terms": ["Unknown"],
+            "mesh_signature": "unknown",
+        },
+    )
+
+    assert result.result == "skipped"
+    collect_articles_mock.assert_not_called()
+
+    session = session_factory()
+    try:
+        refresh = session.execute(
+            select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == "test-task-id")
+        ).scalar_one()
+        assert refresh.status == "skipped"
+        assert refresh.progress_state == "skipped"
+        assert refresh.progress_payload == {
+            "reason": "missing_mesh_terms",
+            "suggestions": ["foo", "bar"],
+        }
+    finally:
+        session.close()

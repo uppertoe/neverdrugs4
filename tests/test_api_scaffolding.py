@@ -14,6 +14,7 @@ from app.models import (
     ProcessedClaimEvidence,
     ProcessedClaimSet,
 )
+from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution, compute_mesh_signature
 
 
@@ -258,6 +259,35 @@ def test_resolve_claims_propogates_job_errors(
         "detail": "Failed to queue background refresh",
     }
     enqueue_mock.assert_called_once()
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+def test_resolve_claims_returns_suggestions_when_mesh_missing(
+    resolve_mock,
+    client,
+):
+    resolve_mock.side_effect = MeshTermsNotFoundError(
+        normalized_condition="unknown condition",
+        search_term_id=77,
+        suggestions=["Alpha Condition", "Beta Disorder"],
+    )
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Some rare thing"},
+    )
+
+    assert response.status_code == 422
+    payload = response.get_json()
+    assert payload["detail"].startswith("No MeSH terms matched")
+    assert payload["resolution"] == {
+        "normalized_condition": "unknown condition",
+        "mesh_terms": [],
+        "reused_cached": False,
+        "search_term_id": 77,
+    }
+    assert payload["suggested_mesh_terms"] == ["Alpha Condition", "Beta Disorder"]
+    resolve_mock.assert_called_once()
 
 
 @patch("app.api.routes.resolve_condition_via_nih")

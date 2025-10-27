@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
 from app.services.llm_batches import LLMRequestBatch, build_llm_batches
-from app.services.nih_pipeline import resolve_condition_via_nih
+from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from app.services.nih_pubmed import NIHPubMedSearcher
 from app.services.openai_client import OpenAIChatClient
 from app.services.processed_claims import persist_processed_claims
@@ -204,11 +204,17 @@ def capture_end_to_end(
         settings = load_settings()
 
         with _record_stage("resolve_condition_via_nih", timings):
-            resolution = resolve_condition_via_nih(
-                search_term,
-                session=session,
-                refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
-            )
+            try:
+                resolution = resolve_condition_via_nih(
+                    search_term,
+                    session=session,
+                    refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
+                )
+            except MeshTermsNotFoundError as exc:
+                suggestion_text = ", ".join(exc.suggestions) if exc.suggestions else "(no suggestions available)"
+                raise RuntimeError(
+                    f"No MeSH terms found for '{search_term}'. Suggested alternatives: {suggestion_text}"
+                ) from exc
 
         artefact = (
             session.query(SearchArtefact)

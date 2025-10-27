@@ -7,7 +7,7 @@ from flask import Blueprint, current_app, jsonify, g, request
 from sqlalchemy import select
 
 from app.models import ClaimSetRefresh, ProcessedClaim, ProcessedClaimDrugLink, ProcessedClaimEvidence, ProcessedClaimSet
-from app.services.nih_pipeline import resolve_condition_via_nih
+from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from app.services.search import compute_mesh_signature
 from app.tasks import refresh_claims_for_condition
 
@@ -232,7 +232,24 @@ def resolve_claims():
     if not condition:
         return jsonify({"detail": "Condition is required"}), 400
 
-    resolution = resolve_condition_via_nih(condition, session=session)
+    try:
+        resolution = resolve_condition_via_nih(condition, session=session)
+    except MeshTermsNotFoundError as exc:
+        return (
+            jsonify(
+                {
+                    "detail": "No MeSH terms matched the supplied condition. Manual input is required.",
+                    "resolution": {
+                        "normalized_condition": exc.normalized_condition,
+                        "mesh_terms": [],
+                        "reused_cached": False,
+                        "search_term_id": exc.search_term_id,
+                    },
+                    "suggested_mesh_terms": list(exc.suggestions),
+                }
+            ),
+            422,
+        )
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
     force_refresh = _coerce_truthy(body.get("force_refresh"))
 

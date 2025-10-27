@@ -83,7 +83,12 @@ class NIHMeshBuilder:
             "mesh_terms": esummary.mesh_terms,
         }
         payload["ranked_mesh_terms"] = [entry.to_dict() for entry in ranked_terms]
-        payload["esearch"]["query"] = build_nih_search_query(selected_terms)
+
+        try:
+            payload["esearch"]["query"] = build_nih_search_query(selected_terms)
+        except ValueError:
+            selected_terms = []
+            payload["esearch"]["query"] = None
 
         return MeshBuildResult(
             mesh_terms=selected_terms,

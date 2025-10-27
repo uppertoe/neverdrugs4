@@ -10,7 +10,7 @@ from .database import create_session_factory
 from .models import ClaimSetRefresh
 from .services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
 from .services.llm_batches import build_llm_batches
-from .services.nih_pipeline import resolve_condition_via_nih
+from .services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from .services.nih_pubmed import NIHPubMedSearcher
 from .services.openai_client import OpenAIChatClient
 from .services.processed_claims import persist_processed_claims
@@ -74,11 +74,29 @@ def refresh_claims_for_condition(
             session.commit()
             return "skipped"
 
-        fresh_resolution = resolve_condition_via_nih(
-            condition_label,
-            session=session,
-            refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
-        )
+        try:
+            fresh_resolution = resolve_condition_via_nih(
+                condition_label,
+                session=session,
+                refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
+            )
+        except MeshTermsNotFoundError as exc:
+            if refresh_job is not None:
+                refresh_job.status = "skipped"
+                refresh_job.error_message = None
+                _update_refresh_progress(
+                    session,
+                    refresh_job,
+                    stage="skipped",
+                    details={
+                        "reason": "missing_mesh_terms",
+                        "suggestions": list(exc.suggestions),
+                    },
+                )
+                session.commit()
+            else:
+                session.commit()
+            return "skipped"
 
         if refresh_job is not None:
             _update_refresh_progress(
