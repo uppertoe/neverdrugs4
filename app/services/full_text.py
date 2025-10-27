@@ -28,11 +28,11 @@ from app.services.snippets import (
 
 @dataclass(slots=True)
 class FullTextSelectionPolicy:
-    base_full_text: int = 2
-    max_full_text: int = 5
-    max_token_budget: int = 16_000
+    base_full_text: int = 12
+    max_full_text: int = 30
+    max_token_budget: int = 150_000
     estimated_tokens_per_full_text: int = 4_500
-    bonus_score_threshold: float = 2.5
+    bonus_score_threshold: float = 1.5
     require_score_cutoff: float = 0.0
     prefer_pmc: bool = True
 
@@ -124,6 +124,12 @@ class NIHFullTextFetcher:
         if article.pmid not in batch:
             raise RuntimeError(f"Failed to fetch content for PMID {article.pmid}")
         return batch[article.pmid]
+
+    def fetch_abstracts(self, articles: Sequence[PubMedArticle]) -> dict[str, ArticleContent]:
+        if not articles:
+            return {}
+
+        return self._fetch_pubmed_batch(articles)
 
     def _fetch_pmc_batch(self, articles: Sequence[PubMedArticle]) -> dict[str, ArticleContent]:
         params = {
@@ -249,6 +255,18 @@ def collect_pubmed_articles(
             contents = full_text_fetcher.fetch_many(selected)
         except RuntimeError:
             contents = {}
+
+    abstract_candidates = [
+        article for article in search_result.articles if article.pmid not in contents
+    ]
+    if abstract_candidates:
+        try:
+            abstract_contents = full_text_fetcher.fetch_abstracts(abstract_candidates)
+        except RuntimeError:
+            abstract_contents = {}
+        else:
+            for pmid, content in abstract_contents.items():
+                contents.setdefault(pmid, content)
 
     persisted_articles = persist_pubmed_articles(
         session,

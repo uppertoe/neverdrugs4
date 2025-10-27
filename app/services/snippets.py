@@ -11,32 +11,86 @@ from sqlalchemy.orm import Session
 from app.models import ArticleArtefact, ArticleSnippet
 from app.services.query_terms import DRUG_TEXT_TERMS
 
+_NEGATING_RISK_PATTERNS: tuple[str, ...] = (
+    "no {}",
+    "not {}",
+    "without {}",
+    "absence of {}",
+    "does not cause {}",
+    "did not cause {}",
+    "doesn't cause {}",
+    "didn't cause {}",
+    "not associated with {}",
+    "no evidence of {}",
+)
+
 DEFAULT_RISK_CUES: tuple[str, ...] = (
+    "adverse",
+    "adverse event",
+    "adverse events",
+    "arrhythmia",
+    "arrhythmias",
     "avoid",
     "avoided",
-    "contraindicated",
-    "should not",
-    "do not use",
-    "risk",
-    "danger",
-    "caution",
-    "hyperkalemia",
-    "malignant hyperthermia",
     "cardiac arrest",
+    "complication",
+    "complications",
+    "contraindicated",
+    "contraindication",
+    "contraindications",
+    "caution",
+    "danger",
+    "deterioration",
+    "do not use",
+    "exacerbate",
+    "exacerbated",
+    "fatal",
+    "harmful",
+    "hazard",
+    "hyperkalemia",
+    "hyperkalaemia",
+    "life-threatening",
+    "malignant hyperthermia",
+    "mh",
+    "precaution",
+    "precipitate",
+    "risk",
+    "risk of",
     "rhabdomyolysis",
-    "adverse",
+    "serious adverse",
+    "should not",
+    "side effect",
+    "side effects",
     "toxic",
+    "toxicity",
+    "trigger",
+    "triggered",
+    "triggering",
+    "unsafe",
+    "worsened",
 )
 DEFAULT_SAFETY_CUES: tuple[str, ...] = (
-    "safe",
-    "safely",
-    "well tolerated",
-    "no complications",
-    "without complications",
-    "recommended",
-    "effective",
-    "successfully",
+    "acceptable safety",
     "beneficial",
+    "did not cause",
+    "effective",
+    "generally safe",
+    "no adverse event",
+    "no adverse events",
+    "no complications",
+    "no major complications",
+    "no reported complications",
+    "no significant adverse",
+    "recommended",
+    "safe",
+    "safe option",
+    "safely",
+    "safety",
+    "successfully",
+    "tolerated well",
+    "well tolerated",
+    "well-tolerated",
+    "without complications",
 )
 DEFAULT_WINDOW_CHARS = 600
 _MIN_SNIPPET_CHARS = 60
@@ -103,11 +157,18 @@ class ArticleSnippetExtractor:
                 if len(snippet) < _MIN_SNIPPET_CHARS:
                     continue
                 snippet_lower = snippet.lower()
-                if require_condition and not any(alias in snippet_lower for alias in condition_aliases):
-                    continue
+                snippet_matches_condition = any(
+                    alias in snippet_lower for alias in condition_aliases
+                )
                 classification, cues = self._classify(snippet_lower, drug)
+                inferred_condition = False
                 if classification is None:
-                    continue
+                    if snippet_matches_condition:
+                        classification = "risk"
+                        cues = ("condition-match",)
+                        inferred_condition = True
+                    else:
+                        continue
 
                 key = (drug, snippet_lower)
                 if key in seen_keys:
@@ -119,6 +180,9 @@ class ArticleSnippetExtractor:
                     pmc_ref_count=pmc_ref_count,
                     classification=classification,
                     cue_count=len(cues),
+                    condition_match=(
+                        snippet_matches_condition or not require_condition or inferred_condition
+                    ),
                 )
 
                 candidates.append(
@@ -155,7 +219,11 @@ class ArticleSnippetExtractor:
         return snippet
 
     def _classify(self, snippet_lower: str, drug: str) -> tuple[str | None, tuple[str, ...]]:
-        risk_hits = tuple(cue for cue in self.risk_cues if cue in snippet_lower)
+        risk_hits = tuple(
+            cue
+            for cue in self.risk_cues
+            if cue in snippet_lower and not _is_negated_risk_phrase(snippet_lower, cue)
+        )
         safety_hits = tuple(cue for cue in self.safety_cues if cue in snippet_lower)
 
         alt_phrase = f"alternative to {drug}"
@@ -181,19 +249,21 @@ class ArticleSnippetExtractor:
         pmc_ref_count: int,
         classification: Literal["risk", "safety"],
         cue_count: int,
+        condition_match: bool,
     ) -> float:
         score = article_score
         score += min(pmc_ref_count / 40.0, 2.0)
         score += 0.5 if classification == "risk" else 0.3
         score += 0.1 * cue_count
+        score += 0.4 if condition_match else -0.2
         return round(score, 4)
 
 
 def select_top_snippets(
     candidates: Sequence[SnippetCandidate],
     *,
-    base_quota: int = 2,
-    max_quota: int = 5,
+    base_quota: int = 3,
+    max_quota: int = 8,
 ) -> list[SnippetCandidate]:
     if not candidates:
         return []
@@ -231,6 +301,14 @@ def _compute_quota(
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join(value.split())
+
+
+def _is_negated_risk_phrase(snippet_lower: str, cue: str) -> bool:
+    for pattern in _NEGATING_RISK_PATTERNS:
+        formatted = pattern.format(cue)
+        if formatted in snippet_lower:
+            return True
+    return False
 
 
 def persist_snippet_candidates(

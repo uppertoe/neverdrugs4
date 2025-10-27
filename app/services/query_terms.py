@@ -41,19 +41,60 @@ DRUG_MESH_TERMS: tuple[str, ...] = (
 )
 
 DRUG_TEXT_TERMS: tuple[str, ...] = (
-    "propofol",
-    "ketamine",
-    "midazolam",
-    "fentanyl",
-    "remifentanil",
-    "dexmedetomidine",
-    "sevoflurane",
-    "isoflurane",
-    "desflurane",
-    "rocuronium",
-    "succinylcholine",
+    "analgesic opioid",
+    "atracurium",
+    "benzodiazepine",
+    "benzodiazepines",
     "bupivacaine",
+    "cefazolin",
+    "cisatracurium",
+    "dantrolene",
+    "dexamethasone",
+    "dexmedetomidine",
+    "desflurane",
+    "etomidate",
+    "fentanyl",
+    "halothane",
+    "inhalational",
+    "inhalational anaesthetic",
+    "inhalational anesthetic",
+    "inhaled",
+    "inhaled anaesthetic",
+    "inhaled anesthetic",
+    "isoflurane",
+    "ketamine",
+    "levobupivacaine",
     "lidocaine",
+    "lignocaine",
+    "local anaesthetic",
+    "local anesthetic",
+    "midazolam",
+    "mivacurium",
+    "morphine",
+    "muscle relaxant",
+    "muscle relaxants",
+    "neuromuscular",
+    "neuromuscular blockade",
+    "neuromuscular blocking agent",
+    "nitrous oxide",
+    "ondansetron",
+    "opioid",
+    "opioids",
+    "pancuronium",
+    "propofol",
+    "remifentanil",
+    "remimazolam",
+    "rocuronium",
+    "ropivacaine",
+    "sevoflurane",
+    "sugammadex",
+    "succinylcholine",
+    "thiopental",
+    "vecuronium",
+    "volatile",
+    "volatile anaesthetic",
+    "volatile anesthetic",
+    "xenon",
 )
 
 
@@ -67,17 +108,24 @@ def build_nih_search_query(
     if not normalized_mesh_terms:
         raise ValueError("At least one condition MeSH term is required to build a query")
 
-    condition_clause = _build_or_clause(normalized_mesh_terms, field="MeSH Terms")
+    condition_mesh_clause = _build_or_clause(normalized_mesh_terms, field="mesh")
 
-    anesthesia_mesh_clause = _build_or_clause(ANESTHESIA_MESH_TERMS, field="MeSH Terms")
-    anesthesia_text_clause = _build_or_clause(ANESTHESIA_TEXT_TERMS, field="Title/Abstract")
+    condition_text_terms: set[str] = set(normalized_mesh_terms)
+    if additional_text_terms:
+        condition_text_terms.update(term for term in additional_text_terms if term)
+    condition_text_clause = _build_or_clause(sorted(condition_text_terms), field="tiab")
 
-    drug_mesh_clause = _build_or_clause(DRUG_MESH_TERMS, field="MeSH Terms")
-    drug_text_clause = _build_or_clause(DRUG_TEXT_TERMS, field="Title/Abstract")
+    condition_clause = _wrap_or(condition_mesh_clause, condition_text_clause)
+
+    anesthesia_mesh_clause = _build_or_clause(ANESTHESIA_MESH_TERMS, field="mesh")
+    anesthesia_text_clause = _build_or_clause(ANESTHESIA_TEXT_TERMS, field="tiab")
+
+    drug_mesh_clause = _build_or_clause(DRUG_MESH_TERMS, field="mesh")
+    drug_text_clause = _build_or_clause(DRUG_TEXT_TERMS, field="tiab")
 
     extra_text_clause = None
     if additional_text_terms:
-        extra_text_clause = _build_or_clause(list(additional_text_terms), field="Title/Abstract")
+        extra_text_clause = _build_or_clause(sorted(set(additional_text_terms)), field="tiab")
 
     anesthesia_clause = _wrap_or(anesthesia_mesh_clause, anesthesia_text_clause)
     drug_clause = _wrap_or(drug_mesh_clause, drug_text_clause)

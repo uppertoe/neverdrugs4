@@ -44,6 +44,8 @@ def test_pubmed_search_returns_ranked_articles() -> None:
     ])
 
     assert result.query.startswith("(")
+    assert "[mesh]" in result.query
+    assert "[tiab]" in result.query
     assert len(result.articles) == 5
     assert [article.pmid for article in result.articles] == [
         "39503119",
@@ -74,7 +76,9 @@ def test_pubmed_search_returns_ranked_articles() -> None:
     assert http_client.calls[0][0].endswith("esearch.fcgi")
     assert http_client.calls[1][0].endswith("esummary.fcgi")
     assert "term" in http_client.calls[0][1]
+    term_query = http_client.calls[0][1]["term"]
     assert http_client.calls[0][1]["db"] == "pubmed"
+    assert "[tiab]" in term_query
     assert http_client.calls[1][1]["id"].startswith("39503119")
 
 

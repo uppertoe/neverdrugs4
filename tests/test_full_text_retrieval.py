@@ -336,3 +336,126 @@ def test_collect_pubmed_articles_persists_metadata_and_full_text(session) -> Non
     propofol_snippet = next(snippet for snippet in snippet_rows if snippet.drug == "propofol")
     assert "propofol" in propofol_snippet.snippet_text.lower()
     assert "no complications" in propofol_snippet.snippet_text.lower()
+
+
+def test_collect_pubmed_articles_fetches_abstracts_for_unselected_articles(session) -> None:
+    term = SearchTerm(canonical="condition")
+    session.add(term)
+    session.flush()
+
+    articles = [
+        PubMedArticle(
+            pmid="39618072",
+            title="A Review of Muscle Relaxants in Anesthesia in Patients with Neuromuscular Disorders Including Guillain-Barré Syndrome, Myasthenia Gravis, Duchenne Muscular Dystrophy, Charcot-Marie-Tooth Disease, and Inflammatory Myopathies.",
+            journal="Med Sci Monit",
+            publication_date="2024 Dec 2",
+            authors=["Saito H"],
+            publication_types=["Journal Article", "Review"],
+            has_abstract=True,
+            pmc_ref_count=40,
+            doi="10.12659/MSM.945675",
+            pmc_id="PMC11623016",
+            preferred_url="https://doi.org/10.12659/MSM.945675",
+            score=5.2,
+        ),
+        PubMedArticle(
+            pmid="23919455",
+            title="Anesthesia and Duchenne or Becker muscular dystrophy: review of 117 anesthetic exposures.",
+            journal="Paediatr Anaesth",
+            publication_date="2013 Sep",
+            authors=["Segura LG"],
+            publication_types=["Journal Article"],
+            has_abstract=True,
+            pmc_ref_count=0,
+            doi="10.1111/pan.12248",
+            pmc_id=None,
+            preferred_url="https://doi.org/10.1111/pan.12248",
+            score=3.2,
+        ),
+        PubMedArticle(
+            pmid="15859443",
+            title="Continuous infusion propofol general anesthesia for dental treatment in patients with progressive muscular dystrophy.",
+            journal="Anesth Prog",
+            publication_date="2005 Spring",
+            authors=["Iida H"],
+            publication_types=["Journal Article"],
+            has_abstract=True,
+            pmc_ref_count=26,
+            doi="10.2344/0003-3006(2005)52[12:CIPGAF]2.0.CO;2",
+            pmc_id="PMC2526213",
+            preferred_url="https://doi.org/10.2344/0003-3006(2005)52[12:CIPGAF]2.0.CO;2",
+            score=2.8,
+        ),
+    ]
+
+    search_result = PubMedSearchResult(
+        query="query",
+        pmids=[article.pmid for article in articles],
+        articles=articles,
+        raw_esearch="es",
+        raw_esummary="sum",
+    )
+
+    class _StubSearcher:
+        def __call__(self, mesh_terms):
+            return search_result
+
+    fixture_http_client = _FixtureHttpClient(
+        {
+            ("pmc", "PMC11623016"): _StubHttpResponse(
+                (FIXTURES / "pmc_full_text_PMC11623016.xml").read_text(encoding="utf-8")
+            ),
+            ("pmc", "PMC2526213"): _StubHttpResponse(
+                (FIXTURES / "pmc_full_text_PMC2526213.xml").read_text(encoding="utf-8")
+            ),
+            ("pubmed", "23919455"): _StubHttpResponse(
+                (FIXTURES / "pubmed_abstract_23919455.xml").read_text(encoding="utf-8")
+            ),
+            ("pubmed", "15859443"): _StubHttpResponse(
+                (FIXTURES / "pubmed_abstract_15859443.xml").read_text(encoding="utf-8")
+            ),
+        }
+    )
+    full_text_fetcher = NIHFullTextFetcher(http_client=fixture_http_client)
+
+    selection_policy = FullTextSelectionPolicy(
+        base_full_text=1,
+        max_full_text=1,
+        max_token_budget=4_500,
+        estimated_tokens_per_full_text=4_500,
+        bonus_score_threshold=10.0,
+    )
+
+    resolution = SearchResolution(
+        normalized_condition="condition",
+        mesh_terms=["Term"],
+        reused_cached=False,
+        search_term_id=term.id,
+    )
+
+    collect_pubmed_articles(
+        resolution,
+        session=session,
+        pubmed_searcher=_StubSearcher(),
+        full_text_fetcher=full_text_fetcher,
+        selection_policy=selection_policy,
+    )
+
+    stored = session.query(ArticleArtefact).order_by(ArticleArtefact.rank).all()
+    assert len(stored) == 3
+
+    second = stored[1]
+    assert second.pmid == "23919455"
+    assert second.content_source == "pubmed-abstract"
+    assert "duchenne muscular dystrophy" in second.content.lower()
+
+    third = stored[2]
+    assert third.pmid == "15859443"
+    assert third.content_source == "pubmed-abstract"
+    assert "propofol" in third.content.lower()
+
+    # Ensure we called PubMed fetch for the remaining articles in a single batch
+    pubmed_calls = [call for call in fixture_http_client.calls if call.get("db") == "pubmed"]
+    assert pubmed_calls, "Expected at least one PubMed abstract fetch"
+    combined_ids = {call["id"] for call in pubmed_calls}
+    assert any("23919455" in ids and "15859443" in ids for ids in combined_ids)

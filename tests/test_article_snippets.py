@@ -141,7 +141,7 @@ def test_select_top_snippets_scales_with_article_weight() -> None:
     low_article_snippets = [c for c in selection if c.pmid == "15859443"]
 
     assert len(high_article_snippets) == 5  # reaches max quota for highly cited article
-    assert len(low_article_snippets) == 2  # limited to baseline quota
+    assert len(low_article_snippets) == 3  # limited to updated baseline quota
     # ensure snippets are sorted by per-article score
     scores = [c.snippet_score for c in low_article_snippets]
     assert scores == sorted(scores, reverse=True)

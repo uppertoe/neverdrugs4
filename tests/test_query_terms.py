@@ -10,12 +10,12 @@ def test_build_nih_search_query_includes_condition_mesh_terms() -> None:
 
     query = query_terms.build_nih_search_query(condition_terms)
 
-    assert "\"Muscular Dystrophy, Duchenne\"[MeSH Terms]" in query
-    assert "\"Becker Muscular Dystrophy\"[MeSH Terms]" in query
-    assert any(f"\"{term}\"[MeSH Terms]" in query for term in query_terms.ANESTHESIA_MESH_TERMS)
-    assert any(f"\"{term}\"[Title/Abstract]" in query for term in query_terms.ANESTHESIA_TEXT_TERMS)
-    assert any(f"\"{term}\"[MeSH Terms]" in query for term in query_terms.DRUG_MESH_TERMS)
-    assert any(f"\"{term}\"[Title/Abstract]" in query for term in query_terms.DRUG_TEXT_TERMS)
+    assert "\"Muscular Dystrophy, Duchenne\"[mesh]" in query
+    assert "\"Becker Muscular Dystrophy\"[mesh]" in query
+    assert any(f"\"{term}\"[mesh]" in query for term in query_terms.ANESTHESIA_MESH_TERMS)
+    assert any(f"\"{term}\"[tiab]" in query for term in query_terms.ANESTHESIA_TEXT_TERMS)
+    assert any(f"\"{term}\"[mesh]" in query for term in query_terms.DRUG_MESH_TERMS)
+    assert any(f"\"{term}\"[tiab]" in query for term in query_terms.DRUG_TEXT_TERMS)
     assert query.count("AND") >= 1
     assert query.count("OR") >= 4
 

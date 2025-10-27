@@ -1,0 +1,42 @@
+[
+  {
+    "batch_index": 0,
+    "model": "gpt-4o-mini",
+    "response_id": "chatcmpl-CV632veaF4TxpF39wWIpCcaOFiLHM",
+    "usage": {
+      "prompt_tokens": 611,
+      "completion_tokens": 210,
+      "total_tokens": 821
+    },
+    "content": "{\n  \"condition\": \"Duchenne muscular dystrophy\",\n  \"claims\": [\n    {\n      \"claim_id\": \"risk:depolarising-neuromuscular-blockers\",\n      \"classification\": \"risk\",\n      \"drug_classes\": [\"depolarising neuromuscular blocker\"],\n      \"drugs\": [\"succinylcholine\"],\n      \"summary\": \"Succinylcholine is associated with an elevated perioperative risk in patients with Duchenne muscular dystrophy due to malignant hyperthermia-like reactions.\",\n      \"confidence\": \"high\",\n      \"supporting_evidence\": [\n        {\n          \"snippet_id\": \"1\",\n          \"pmid\": \"11111111\",\n          \"article_title\": \"Safety considerations for neuromuscular blockade in dystrophinopathies\",\n          \"key_points\": [\"malignant hyperthermia-like reactions\", \"elevated perioperative risk\"],\n          \"notes\": \"Case reports indicate significant risk when using succinylcholine.\"\n        }\n      ]\n    }\n  ]\n}",
+    "parsed": {
+      "condition": "Duchenne muscular dystrophy",
+      "claims": [
+        {
+          "claim_id": "risk:depolarising-neuromuscular-blockers",
+          "classification": "risk",
+          "drug_classes": [
+            "depolarising neuromuscular blocker"
+          ],
+          "drugs": [
+            "succinylcholine"
+          ],
+          "summary": "Succinylcholine is associated with an elevated perioperative risk in patients with Duchenne muscular dystrophy due to malignant hyperthermia-like reactions.",
+          "confidence": "high",
+          "supporting_evidence": [
+            {
+              "snippet_id": "1",
+              "pmid": "11111111",
+              "article_title": "Safety considerations for neuromuscular blockade in dystrophinopathies",
+              "key_points": [
+                "malignant hyperthermia-like reactions",
+                "elevated perioperative risk"
+              ],
+              "notes": "Case reports indicate significant risk when using succinylcholine."
+            }
+          ]
+        }
+      ]
+    }
+  }
+]
