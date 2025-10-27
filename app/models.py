@@ -58,6 +58,7 @@ class SearchArtefact(Base):
     query_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     mesh_terms: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     mesh_signature: Mapped[str] = mapped_column(String(512), index=True, nullable=False)
+    result_signature: Mapped[str | None] = mapped_column(String(512), index=True, nullable=True)
     ttl_policy_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86_400)
     last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -117,6 +118,22 @@ class ArticleSnippet(Base):
 
     __table_args__ = (
         UniqueConstraint("article_artefact_id", "snippet_hash", name="uq_snippet_article_hash"),
+    )
+
+
+class ClaimSetRefresh(Base):
+    __tablename__ = "claim_set_refreshes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mesh_signature: Mapped[str] = mapped_column(String(512), unique=True, index=True, nullable=False)
+    job_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
     )
 
 

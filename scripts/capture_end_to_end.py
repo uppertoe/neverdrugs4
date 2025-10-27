@@ -27,6 +27,7 @@ from app.services.nih_pubmed import NIHPubMedSearcher
 from app.services.openai_client import OpenAIChatClient
 from app.services.processed_claims import persist_processed_claims
 from app.services.search import compute_mesh_signature
+from app.settings import load_settings
 
 
 @contextmanager
@@ -200,9 +201,14 @@ def capture_end_to_end(
     try:
         timings: dict[str, float] = {}
         started_at = time.perf_counter()
+        settings = load_settings()
 
         with _record_stage("resolve_condition_via_nih", timings):
-            resolution = resolve_condition_via_nih(search_term, session=session)
+            resolution = resolve_condition_via_nih(
+                search_term,
+                session=session,
+                refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
+            )
 
         artefact = (
             session.query(SearchArtefact)

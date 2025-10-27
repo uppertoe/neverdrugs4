@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import SearchArtefact, SearchTerm, SearchTermVariant
+from app.settings import DEFAULT_SEARCH_REFRESH_TTL_SECONDS
 
 
 DEFAULT_TTL_SECONDS = 86_400
+DEFAULT_CACHE_REFRESH_THRESHOLD_SECONDS = DEFAULT_SEARCH_REFRESH_TTL_SECONDS
 
 
 @dataclass(slots=True)
@@ -49,6 +51,8 @@ def resolve_search_input(
     session: Session,
     mesh_builder: Callable[[str], MeshBuildResult],
     espell_fetcher: Callable[[str], Optional[str]],
+    refresh_ttl_seconds: int | None = None,
+    result_signature_provider: Callable[[list[str], str], str | None] | None = None,
 ) -> SearchResolution:
     normalized_input = normalize_condition(raw_condition)
     espell_suggestion = espell_fetcher(normalized_input)
@@ -59,21 +63,68 @@ def resolve_search_input(
     reused_cached = False
     artefact: SearchArtefact | None = None
 
+    refresh_threshold = refresh_ttl_seconds or DEFAULT_CACHE_REFRESH_THRESHOLD_SECONDS
+
     if search_term is not None:
         _ensure_variant_record(session, search_term, raw_condition, search_normalized)
         artefact = _select_freshest_artefact(search_term)
 
         if artefact is None:
             build_result = mesh_builder(search_normalized)
-            signature = compute_mesh_signature(build_result.mesh_terms)
-            artefact = _upsert_artefact(search_term, session, build_result, signature)
+            mesh_signature = compute_mesh_signature(build_result.mesh_terms)
+            result_signature = _compute_result_signature(
+                build_result.mesh_terms,
+                search_normalized,
+                provider=result_signature_provider,
+                fallback=mesh_signature,
+            )
+            artefact = _upsert_artefact(
+                search_term,
+                session,
+                build_result,
+                mesh_signature,
+                result_signature,
+            )
         else:
             reused_cached = True
+            if _should_refresh_artefact(artefact, refresh_threshold):
+                build_result = mesh_builder(search_normalized)
+                mesh_signature = compute_mesh_signature(build_result.mesh_terms)
+                existing_signature = artefact.result_signature or artefact.mesh_signature
+                result_signature = _compute_result_signature(
+                    build_result.mesh_terms,
+                    search_normalized,
+                    provider=result_signature_provider,
+                    fallback=mesh_signature,
+                )
+
+                if existing_signature == result_signature:
+                    _refresh_existing_artefact(
+                        artefact,
+                        build_result,
+                        mesh_signature=mesh_signature,
+                        result_signature=result_signature,
+                    )
+                else:
+                    artefact = _upsert_artefact(
+                        search_term,
+                        session,
+                        build_result,
+                        mesh_signature,
+                        result_signature,
+                    )
+                    reused_cached = False
     else:
         build_result = mesh_builder(search_normalized)
-        signature = compute_mesh_signature(build_result.mesh_terms)
+        mesh_signature = compute_mesh_signature(build_result.mesh_terms)
+        result_signature = _compute_result_signature(
+            build_result.mesh_terms,
+            search_normalized,
+            provider=result_signature_provider,
+            fallback=mesh_signature,
+        )
 
-        search_term = _lookup_search_term_by_signature(session, signature)
+        search_term = _lookup_search_term_by_signature(session, mesh_signature)
         created_new_term = False
         if search_term is None:
             search_term = SearchTerm(canonical=search_normalized)
@@ -82,7 +133,13 @@ def resolve_search_input(
             created_new_term = True
 
         _ensure_variant_record(session, search_term, raw_condition, search_normalized)
-        artefact = _upsert_artefact(search_term, session, build_result, signature)
+        artefact = _upsert_artefact(
+            search_term,
+            session,
+            build_result,
+            mesh_signature,
+            result_signature,
+        )
         reused_cached = not created_new_term
 
     session.flush()
@@ -146,17 +203,29 @@ def _select_freshest_artefact(search_term: SearchTerm) -> SearchArtefact | None:
     )
 
 
+def _should_refresh_artefact(artefact: SearchArtefact, threshold_seconds: int | None) -> bool:
+    if not threshold_seconds:
+        return False
+    if artefact.last_refreshed_at is None:
+        return True
+    age = datetime.now(timezone.utc) - artefact.last_refreshed_at
+    return age.total_seconds() >= threshold_seconds
+
+
 def _persist_mesh_result(
     search_term: SearchTerm,
     session: Session,
     build_result: MeshBuildResult,
+    mesh_signature: str,
+    result_signature: str,
 ) -> SearchArtefact:
     artefact = SearchArtefact(
         query_payload=build_result.query_payload,
         mesh_terms=build_result.mesh_terms,
         ttl_policy_seconds=build_result.ttl_policy_seconds or DEFAULT_TTL_SECONDS,
         last_refreshed_at=datetime.now(timezone.utc),
-        mesh_signature=compute_mesh_signature(build_result.mesh_terms),
+        mesh_signature=mesh_signature,
+        result_signature=result_signature,
     )
     search_term.artefacts.append(artefact)
     session.flush()
@@ -167,10 +236,11 @@ def _upsert_artefact(
     search_term: SearchTerm,
     session: Session,
     build_result: MeshBuildResult,
-    signature: str,
+    mesh_signature: str,
+    result_signature: str,
 ) -> SearchArtefact:
     matching = next(
-        (artefact for artefact in search_term.artefacts if artefact.mesh_signature == signature),
+        (artefact for artefact in search_term.artefacts if artefact.mesh_signature == mesh_signature),
         None,
     )
 
@@ -179,7 +249,46 @@ def _upsert_artefact(
         matching.mesh_terms = build_result.mesh_terms
         matching.ttl_policy_seconds = build_result.ttl_policy_seconds or DEFAULT_TTL_SECONDS
         matching.last_refreshed_at = datetime.now(timezone.utc)
+        matching.mesh_signature = mesh_signature
+        matching.result_signature = result_signature
         session.flush()
         return matching
 
-    return _persist_mesh_result(search_term, session, build_result)
+    return _persist_mesh_result(
+        search_term,
+        session,
+        build_result,
+        mesh_signature,
+        result_signature,
+    )
+
+
+def _refresh_existing_artefact(
+    artefact: SearchArtefact,
+    build_result: MeshBuildResult,
+    *,
+    mesh_signature: str,
+    result_signature: str,
+) -> None:
+    # Refresh timestamp and payload without triggering downstream pipeline work.
+    artefact.query_payload = build_result.query_payload
+    artefact.mesh_terms = build_result.mesh_terms
+    artefact.ttl_policy_seconds = build_result.ttl_policy_seconds or DEFAULT_TTL_SECONDS
+    artefact.last_refreshed_at = datetime.now(timezone.utc)
+    artefact.mesh_signature = mesh_signature
+    artefact.result_signature = result_signature
+
+
+def _compute_result_signature(
+    mesh_terms: list[str],
+    normalized_condition: str,
+    *,
+    provider: Callable[[list[str], str], str | None] | None,
+    fallback: str,
+) -> str:
+    if provider is None:
+        return fallback
+    signature = provider(list(mesh_terms), normalized_condition)
+    if signature is None:
+        return fallback
+    return str(signature)

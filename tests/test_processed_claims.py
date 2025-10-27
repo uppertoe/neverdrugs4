@@ -22,6 +22,7 @@ def _seed_search_term(session, mesh_signature: str) -> tuple[SearchTerm, SearchA
         query_payload={"mesh": ["King Denborough syndrome"]},
         mesh_terms=["King Denborough syndrome"],
         mesh_signature=mesh_signature,
+        result_signature=mesh_signature,
         ttl_policy_seconds=86400,
     )
     session.add(artefact)
