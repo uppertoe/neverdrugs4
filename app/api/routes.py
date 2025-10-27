@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from urllib.parse import unquote
+
 from flask import Blueprint, current_app, jsonify, g, request
 from sqlalchemy import select
 
@@ -7,6 +10,10 @@ from app.models import ClaimSetRefresh, ProcessedClaim, ProcessedClaimDrugLink, 
 from app.services.nih_pipeline import resolve_condition_via_nih
 from app.services.search import compute_mesh_signature
 from app.tasks import refresh_claims_for_condition
+
+DEFAULT_REFRESH_STALE_SECONDS = 300
+DEFAULT_REFRESH_STALE_QUEUE_SECONDS = 60
+
 
 api_blueprint = Blueprint("api", __name__, url_prefix="/api")
 
@@ -68,6 +75,119 @@ def _serialise_drug_link(link: ProcessedClaimDrugLink) -> dict:
     }
 
 
+def _mesh_terms_from_signature(signature: str | None) -> list[str]:
+    if not signature:
+        return []
+    parts = [part.strip() for part in signature.split("|") if part.strip()]
+    return [part.title() for part in parts]
+
+
+def _coerce_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
+def _build_resolution_snapshot(
+    refresh: ClaimSetRefresh,
+    claim_set: ProcessedClaimSet | None,
+    progress_details: dict,
+) -> dict | None:
+    resolution_details = progress_details.get("resolution")
+    normalized_condition: str | None = None
+    mesh_terms: list[str] = []
+
+    if isinstance(resolution_details, dict):
+        normalized_condition = resolution_details.get("normalized_condition")
+        mesh_terms = [str(term) for term in resolution_details.get("mesh_terms", []) if term]
+
+    signature_source: str | None = None
+    if claim_set and claim_set.mesh_signature:
+        signature_source = claim_set.mesh_signature
+    elif refresh.mesh_signature:
+        signature_source = refresh.mesh_signature
+
+    if not normalized_condition and signature_source:
+        normalized_condition = signature_source.replace("|", " ").strip() or None
+
+    if not mesh_terms:
+        mesh_terms = _mesh_terms_from_signature(signature_source)
+
+    if normalized_condition or mesh_terms:
+        return {
+            "normalized_condition": normalized_condition,
+            "mesh_terms": mesh_terms,
+        }
+    return None
+
+
+def _refresh_can_retry(refresh: ClaimSetRefresh) -> bool:
+    return refresh.status in {"failed", "no-batches", "no-responses"}
+
+
+def _refresh_is_stale(refresh: ClaimSetRefresh) -> bool:
+    if refresh.status not in {"queued", "running"}:
+        return False
+    updated_at = refresh.updated_at
+    if updated_at is None:
+        return False
+
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    stage = (refresh.progress_state or "").strip().lower()
+
+    if stage == "queued":
+        configured_threshold = current_app.config.get(
+            "REFRESH_JOB_STALE_QUEUE_SECONDS",
+            DEFAULT_REFRESH_STALE_QUEUE_SECONDS,
+        )
+        default_threshold = DEFAULT_REFRESH_STALE_QUEUE_SECONDS
+    else:
+        configured_threshold = current_app.config.get(
+            "REFRESH_JOB_STALE_SECONDS",
+            DEFAULT_REFRESH_STALE_SECONDS,
+        )
+        default_threshold = DEFAULT_REFRESH_STALE_SECONDS
+
+    try:
+        threshold_seconds = int(configured_threshold)
+    except (TypeError, ValueError):
+        threshold_seconds = default_threshold
+
+    threshold_seconds = max(threshold_seconds, 0)
+    age_seconds = (now - updated_at).total_seconds()
+
+    return age_seconds >= threshold_seconds
+
+
+def _serialise_refresh_job(
+    refresh: ClaimSetRefresh,
+    claim_set: ProcessedClaimSet | None,
+) -> dict:
+    progress_details = refresh.progress_payload if isinstance(refresh.progress_payload, dict) else {}
+    return {
+        "mesh_signature": refresh.mesh_signature,
+        "job_id": refresh.job_id,
+        "status": refresh.status,
+        "error_message": refresh.error_message,
+        "created_at": refresh.created_at.isoformat() if refresh.created_at else None,
+        "updated_at": refresh.updated_at.isoformat() if refresh.updated_at else None,
+        "progress": {
+            "stage": refresh.progress_state,
+            "details": progress_details,
+        },
+        "claim_set_id": claim_set.id if claim_set else None,
+        "resolution": _build_resolution_snapshot(refresh, claim_set, progress_details),
+        "can_retry": _refresh_can_retry(refresh) or _refresh_is_stale(refresh),
+    }
+
+
 @api_blueprint.get("/claims/<int:claim_set_id>")
 def get_processed_claim(claim_set_id: int):
     session = _get_db_session()
@@ -76,6 +196,31 @@ def get_processed_claim(claim_set_id: int):
         return jsonify({"detail": "Processed claim set not found"}), 404
 
     payload = _serialise_claim_set(claim_set)
+    return jsonify(payload), 200
+
+
+@api_blueprint.get("/claims/refresh/<path:mesh_signature>")
+def get_refresh_status(mesh_signature: str):
+    session = _get_db_session()
+    decoded_signature = unquote(mesh_signature)
+    stmt = select(ClaimSetRefresh).where(ClaimSetRefresh.mesh_signature == decoded_signature)
+    refresh_job = session.execute(stmt).scalar_one_or_none()
+    claim_set: ProcessedClaimSet | None = None
+
+    if refresh_job is None and decoded_signature.isdigit():
+        claim_set = session.get(ProcessedClaimSet, int(decoded_signature))
+        if claim_set is not None:
+            stmt = select(ClaimSetRefresh).where(ClaimSetRefresh.mesh_signature == claim_set.mesh_signature)
+            refresh_job = session.execute(stmt).scalar_one_or_none()
+
+    if refresh_job is None:
+        return jsonify({"detail": "Refresh job not found"}), 404
+
+    if claim_set is None:
+        claim_stmt = select(ProcessedClaimSet).where(ProcessedClaimSet.mesh_signature == refresh_job.mesh_signature)
+        claim_set = session.execute(claim_stmt).scalar_one_or_none()
+
+    payload = _serialise_refresh_job(refresh_job, claim_set)
     return jsonify(payload), 200
 
 
@@ -89,6 +234,7 @@ def resolve_claims():
 
     resolution = resolve_condition_via_nih(condition, session=session)
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
+    force_refresh = _coerce_truthy(body.get("force_refresh"))
 
     claim_set: ProcessedClaimSet | None = None
     refresh_job: ClaimSetRefresh | None = None
@@ -102,10 +248,21 @@ def resolve_claims():
 
     status_code = 200
     job_info: dict[str, object] | None = None
-    if claim_set is None:
-        if refresh_job and refresh_job.status in {"queued", "running"}:
-            job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
+    needs_refresh = force_refresh or claim_set is None
+
+    if needs_refresh:
+        should_enqueue = False
+        if refresh_job is None:
+            should_enqueue = True
         else:
+            if force_refresh:
+                should_enqueue = True
+            elif _refresh_can_retry(refresh_job):
+                should_enqueue = True
+            elif _refresh_is_stale(refresh_job):
+                should_enqueue = True
+
+        if should_enqueue:
             try:
                 job_info = enqueue_claim_pipeline(
                     session=session,
@@ -126,13 +283,22 @@ def resolve_claims():
                         mesh_signature=mesh_signature,
                         job_id=str(job_info.get("job_id", "")),
                         status=str(job_info.get("status", "queued")),
+                        progress_state="queued",
+                        progress_payload={},
                     )
                     session.add(refresh_job)
                 else:
                     refresh_job.job_id = str(job_info.get("job_id", ""))
                     refresh_job.status = str(job_info.get("status", "queued"))
                     refresh_job.error_message = None
+                    refresh_job.progress_state = "queued"
+                    refresh_job.progress_payload = {}
+        elif refresh_job is not None:
+            job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
 
+        status_code = 202
+    elif refresh_job is not None and refresh_job.status in {"queued", "running"}:
+        job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
         status_code = 202
 
     response_payload = {

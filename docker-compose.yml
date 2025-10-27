@@ -3,13 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: gunicorn --bind 0.0.0.0:8000 app.wsgi:app
+    command: ./scripts/docker-entrypoint.sh gunicorn --bind 0.0.0.0:8000 app.wsgi:app
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/neverdrugs4
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       FLASK_ENV: development
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - ./:/usr/src/app
     ports:
@@ -24,12 +25,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.celery_app.celery worker --loglevel=info
+    command: ./scripts/docker-entrypoint.sh celery -A app.celery_app.celery worker --loglevel=info
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/neverdrugs4
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      RUN_DB_MIGRATIONS: "0"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - ./:/usr/src/app
     depends_on:

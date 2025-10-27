@@ -8,8 +8,10 @@ from sqlalchemy import select
 from .celery_app import celery
 from .database import create_session_factory
 from .models import ClaimSetRefresh
+from .services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
 from .services.llm_batches import build_llm_batches
 from .services.nih_pipeline import resolve_condition_via_nih
+from .services.nih_pubmed import NIHPubMedSearcher
 from .services.openai_client import OpenAIChatClient
 from .services.processed_claims import persist_processed_claims
 from .services.search import SearchResolution, compute_mesh_signature
@@ -49,7 +51,7 @@ def refresh_claims_for_condition(
             if refresh_job is not None:
                 refresh_job.status = "running"
                 refresh_job.error_message = None
-                session.flush()
+                _update_refresh_progress(session, refresh_job, stage="resolving_condition")
 
         resolution = SearchResolution(
             normalized_condition=normalized_condition,
@@ -63,6 +65,12 @@ def refresh_claims_for_condition(
             if refresh_job is not None:
                 refresh_job.status = "skipped"
                 refresh_job.error_message = None
+                _update_refresh_progress(
+                    session,
+                    refresh_job,
+                    stage="skipped",
+                    details={"reason": "missing_mesh_signature"},
+                )
             session.commit()
             return "skipped"
 
@@ -71,6 +79,31 @@ def refresh_claims_for_condition(
             session=session,
             refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
         )
+
+        if refresh_job is not None:
+            _update_refresh_progress(
+                session,
+                refresh_job,
+                stage="collecting_articles",
+                details={"search_term_id": fresh_resolution.search_term_id},
+            )
+
+        collect_pubmed_articles(
+            fresh_resolution,
+            session=session,
+            pubmed_searcher=NIHPubMedSearcher(),
+            full_text_fetcher=NIHFullTextFetcher(),
+            selection_policy=FullTextSelectionPolicy(),
+        )
+        session.flush()
+
+        if refresh_job is not None:
+            _update_refresh_progress(
+                session,
+                refresh_job,
+                stage="building_batches",
+                details={"search_term_id": fresh_resolution.search_term_id},
+            )
 
         batches = build_llm_batches(
             session,
@@ -82,8 +115,22 @@ def refresh_claims_for_condition(
             if refresh_job is not None:
                 refresh_job.status = "no-batches"
                 refresh_job.error_message = None
+                _update_refresh_progress(
+                    session,
+                    refresh_job,
+                    stage="no_batches",
+                    details={"reason": "no_llm_batches"},
+                )
             session.commit()
             return "no-batches"
+
+        if refresh_job is not None:
+            _update_refresh_progress(
+                session,
+                refresh_job,
+                stage="invoking_llm",
+                details={"batch_count": len(batches)},
+            )
 
         client = OpenAIChatClient()
         responses = client.run_batches(batches)
@@ -91,8 +138,22 @@ def refresh_claims_for_condition(
             if refresh_job is not None:
                 refresh_job.status = "no-responses"
                 refresh_job.error_message = None
+                _update_refresh_progress(
+                    session,
+                    refresh_job,
+                    stage="no_responses",
+                    details={"reason": "llm_returned_no_responses"},
+                )
             session.commit()
             return "no-responses"
+
+        if refresh_job is not None:
+            _update_refresh_progress(
+                session,
+                refresh_job,
+                stage="persisting_claims",
+                details={"response_count": len(responses)},
+            )
 
         persist_processed_claims(
             session,
@@ -104,6 +165,12 @@ def refresh_claims_for_condition(
         if refresh_job is not None:
             refresh_job.status = "completed"
             refresh_job.error_message = None
+            _update_refresh_progress(
+                session,
+                refresh_job,
+                stage="completed",
+                details={"responses": len(responses)},
+            )
 
         session.commit()
         return "completed"
@@ -117,10 +184,30 @@ def refresh_claims_for_condition(
             if refreshed_job is not None:
                 refreshed_job.status = "failed"
                 refreshed_job.error_message = str(exc)
+                _update_refresh_progress(
+                    session,
+                    refreshed_job,
+                    stage="failed",
+                    details={"error": str(exc)},
+                )
                 session.commit()
             else:
                 session.rollback()
         raise self.retry(exc=exc, countdown=30, max_retries=3)
     finally:
         session.close()
+
+
+def _update_refresh_progress(
+    session,
+    refresh_job: ClaimSetRefresh,
+    *,
+    stage: str,
+    details: dict | None = None,
+) -> None:
+    if refresh_job is None:
+        return
+    refresh_job.progress_state = stage
+    refresh_job.progress_payload = details or {}
+    session.flush()
 

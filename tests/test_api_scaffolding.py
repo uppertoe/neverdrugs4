@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import quote
+
+from sqlalchemy import select
 
 from app.models import (
     ClaimSetRefresh,
@@ -294,6 +298,147 @@ def test_resolve_claims_reuses_existing_refresh_job(
 
 @patch("app.api.routes.resolve_condition_via_nih")
 @patch("app.api.routes.enqueue_claim_pipeline")
+def test_resolve_claims_force_refresh_requeues_existing_job(
+    enqueue_mock,
+    resolve_mock,
+    client,
+    session,
+):
+    resolution = SearchResolution(
+        normalized_condition="duchenne muscular dystrophy",
+        mesh_terms=["Duchenne Muscular Dystrophy"],
+        reused_cached=True,
+        search_term_id=7,
+    )
+    resolve_mock.return_value = resolution
+    mesh_signature = compute_mesh_signature(resolution.mesh_terms)
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-original",
+        status="running",
+        progress_state="collecting_articles",
+        progress_payload={"stage": "collecting"},
+    )
+    session.add(refresh)
+    session.flush()
+
+    enqueue_mock.return_value = {
+        "job_id": "task-new",
+        "status": "queued",
+    }
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Duchenne", "force_refresh": True},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["job"] == {"job_id": "task-new", "status": "queued"}
+    enqueue_mock.assert_called_once()
+
+    session.refresh(refresh)
+    assert refresh.job_id == "task-new"
+    assert refresh.status == "queued"
+    assert refresh.progress_state == "queued"
+    assert refresh.progress_payload == {}
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+@patch("app.api.routes.enqueue_claim_pipeline")
+def test_resolve_claims_force_refresh_with_existing_claim_set(
+    enqueue_mock,
+    resolve_mock,
+    client,
+    session,
+):
+    resolution = SearchResolution(
+        normalized_condition="duchenne muscular dystrophy",
+        mesh_terms=["Duchenne Muscular Dystrophy"],
+        reused_cached=True,
+        search_term_id=42,
+    )
+    resolve_mock.return_value = resolution
+    mesh_signature = compute_mesh_signature(resolution.mesh_terms)
+    claim_set = _seed_processed_claim_set(
+        session,
+        mesh_signature=mesh_signature,
+        condition_label="Duchenne",
+    )
+
+    enqueue_mock.return_value = {"job_id": "task-refresh", "status": "queued"}
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Duchenne", "force_refresh": True},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["claim_set"]["id"] == claim_set.id
+    assert payload["job"] == {"job_id": "task-refresh", "status": "queued"}
+    enqueue_mock.assert_called_once()
+
+    refresh_record = session.execute(
+        select(ClaimSetRefresh).where(ClaimSetRefresh.mesh_signature == mesh_signature)
+    ).scalar_one()
+    assert refresh_record.job_id == "task-refresh"
+    assert refresh_record.status == "queued"
+    assert refresh_record.progress_state == "queued"
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+@patch("app.api.routes.enqueue_claim_pipeline")
+def test_resolve_claims_requeues_stale_job(
+    enqueue_mock,
+    resolve_mock,
+    client,
+    session,
+):
+    resolution = SearchResolution(
+        normalized_condition="duchenne muscular dystrophy",
+        mesh_terms=["Duchenne Muscular Dystrophy"],
+        reused_cached=True,
+        search_term_id=7,
+    )
+    resolve_mock.return_value = resolution
+    mesh_signature = compute_mesh_signature(resolution.mesh_terms)
+    stale_time = datetime.now(timezone.utc) - timedelta(seconds=601)
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-stale",
+        status="running",
+        progress_state="collecting_articles",
+        progress_payload={"stage": "collecting"},
+        updated_at=stale_time,
+    )
+    session.add(refresh)
+    session.flush()
+
+    enqueue_mock.return_value = {
+        "job_id": "task-refreshed",
+        "status": "queued",
+    }
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Duchenne"},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["job"] == {"job_id": "task-refreshed", "status": "queued"}
+    enqueue_mock.assert_called_once()
+
+    session.refresh(refresh)
+    assert refresh.job_id == "task-refreshed"
+    assert refresh.status == "queued"
+    assert refresh.progress_state == "queued"
+    assert refresh.progress_payload == {}
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+@patch("app.api.routes.enqueue_claim_pipeline")
 def test_resolve_claims_logs_enqueue_failures(
     enqueue_mock,
     resolve_mock,
@@ -318,3 +463,139 @@ def test_resolve_claims_logs_enqueue_failures(
     assert response.status_code == 503
     assert "Failed to queue background refresh" in response.get_json()["detail"]
     assert "celery not available" in caplog.text
+
+
+def test_get_refresh_status_returns_job_metadata(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-123",
+        status="running",
+        error_message="processing",
+        progress_state="collecting",
+        progress_payload={"steps_completed": ["resolve_condition"]},
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{quote(mesh_signature, safe='')}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["mesh_signature"] == mesh_signature
+    assert payload["job_id"] == "task-123"
+    assert payload["status"] == "running"
+    assert payload["error_message"] == "processing"
+    assert payload["claim_set_id"] is None
+    assert payload["created_at"]
+    assert payload["updated_at"]
+    assert payload["progress"] == {
+        "stage": "collecting",
+        "details": {"steps_completed": ["resolve_condition"]},
+    }
+
+
+def test_get_refresh_status_includes_claim_set_id_when_ready(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    claim_set = _seed_processed_claim_set(
+        session,
+        mesh_signature=mesh_signature,
+        condition_label="Duchenne",
+    )
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-456",
+        status="completed",
+        progress_state="completed",
+        progress_payload={"steps_completed": ["resolve_condition", "persist_claims"]},
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{quote(mesh_signature, safe='')}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["claim_set_id"] == claim_set.id
+    assert payload["status"] == "completed"
+    assert payload["job_id"] == "task-456"
+    assert payload["progress"]["stage"] == "completed"
+    assert payload["resolution"] == {
+        "normalized_condition": "duchenne muscular dystrophy",
+        "mesh_terms": ["Duchenne Muscular Dystrophy"],
+    }
+
+
+def test_get_refresh_status_returns_404_for_unknown_signature(client):
+    response = client.get("/api/claims/refresh/unknown-signature")
+    assert response.status_code == 404
+    assert response.get_json() == {"detail": "Refresh job not found"}
+
+
+def test_get_refresh_status_accepts_claim_set_id_lookup(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    claim_set = _seed_processed_claim_set(
+        session,
+        mesh_signature=mesh_signature,
+        condition_label="Duchenne",
+    )
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-789",
+        status="running",
+        progress_state="running",
+        progress_payload={},
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{claim_set.id}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["mesh_signature"] == mesh_signature
+    assert payload["claim_set_id"] == claim_set.id
+    assert payload["job_id"] == "task-789"
+
+
+def test_get_refresh_status_exposes_failure_details(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-999",
+        status="failed",
+        error_message="OpenAI timeout",
+        progress_state="failed",
+        progress_payload={"error": "OpenAI timeout"},
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{quote(mesh_signature, safe='')}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "failed"
+    assert payload["error_message"] == "OpenAI timeout"
+    assert payload["can_retry"] is True
+
+
+def test_get_refresh_status_marks_stale_job_retryable(client, session):
+    mesh_signature = "duchenne muscular dystrophy"
+    stale_time = datetime.now(timezone.utc) - timedelta(seconds=601)
+    refresh = ClaimSetRefresh(
+        mesh_signature=mesh_signature,
+        job_id="task-888",
+        status="running",
+        progress_state="collecting",
+        progress_payload={},
+        updated_at=stale_time,
+    )
+    session.add(refresh)
+    session.flush()
+
+    response = client.get(f"/api/claims/refresh/{quote(mesh_signature, safe='')}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["can_retry"] is True

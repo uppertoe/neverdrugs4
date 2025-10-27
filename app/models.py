@@ -129,6 +129,8 @@ class ClaimSetRefresh(Base):
     job_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     error_message: Mapped[str | None] = mapped_column(Text)
+    progress_state: Mapped[str | None] = mapped_column(String(64))
+    progress_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), nullable=False
     )

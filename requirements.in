@@ -1,4 +1,5 @@
 Flask
+alembic
 celery
 gunicorn
 psycopg2-binary

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,6 +18,11 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY app ./app
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
+COPY scripts ./scripts
+
+RUN chmod +x scripts/docker-entrypoint.sh
 
 EXPOSE 8000
 
