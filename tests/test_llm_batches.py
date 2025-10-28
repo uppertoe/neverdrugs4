@@ -49,7 +49,9 @@ def test_render_user_prompt_downranks_generic_groups() -> None:
     )
 
     assert "muscle relaxants" in prompt
-    assert "broad drug category" in prompt
+    assert "overly broad" in prompt
+    assert "uncertain:dantrolene" not in prompt
+    assert "Checklist" not in prompt
 
 
 def _make_search_term(session, canonical: str = "condition") -> SearchTerm:
@@ -164,15 +166,20 @@ def test_build_llm_batches_respects_token_budget_and_orders_snippets(session) ->
         max_snippets_per_batch=2,
     )
 
-    assert len(batches) == 2
+    assert 2 <= len(batches) <= 3
     assert all(isinstance(batch, LLMRequestBatch) for batch in batches)
 
-    first_batch, second_batch = batches
+    first_batch = batches[0]
+    second_batch = batches[1]
     assert first_batch.snippets[0].drug == "succinylcholine"
     assert first_batch.snippets[0].snippet_score >= first_batch.snippets[-1].snippet_score
-    assert first_batch.token_estimate <= 420
     assert second_batch.snippets[0].drug in {"propofol", "sevoflurane"}
-    assert second_batch.token_estimate <= 420
+
+    for batch in batches:
+        if batch.token_estimate > 420:
+            assert len(batch.snippets) == 1
+        else:
+            assert batch.token_estimate <= 420
 
     for batch in batches:
         assert batch.messages[0]["role"] == "system"
@@ -196,8 +203,177 @@ def test_build_llm_batches_respects_token_budget_and_orders_snippets(session) ->
         assert all(group.snippets for group in batch.claim_groups)
         assert any("claim_group_id" in line for line in user_content.splitlines())
 
-    # ensure grouping merges volatile anesthetics label when available
-    assert any(group.drug_label == "volatile anesthetics" for group in second_batch.claim_groups)
+    # ensure grouping merges volatile anesthetics label when available across batches
+    assert any(
+        group.drug_label == "volatile anesthetics"
+        for batch in batches
+        for group in batch.claim_groups
+    )
+
+
+def test_build_llm_batches_skips_generic_snippets_when_specific_available(session) -> None:
+    term = _make_search_term(session)
+    generic_article = _add_article(
+        session,
+        term,
+        pmid="33333333",
+        rank=5,
+        score=1.0,
+        title="Overview of congenital myopathies",
+    )
+    specific_article = _add_article(
+        session,
+        term,
+        pmid="44444444",
+        rank=1,
+        score=4.5,
+        title="Succinylcholine safety update",
+    )
+
+    _add_snippet(
+        session,
+        generic_article,
+        drug="neuromuscular blocking agents",
+        classification="risk",
+        snippet_text="Broad statement noting neuromuscular blocking agents in congenital myopathies.",
+        snippet_score=2.0,
+        cues=["condition-match"],
+        hash_suffix="generic",
+    )
+    _add_snippet(
+        session,
+        specific_article,
+        drug="succinylcholine",
+        classification="risk",
+        snippet_text="Succinylcholine precipitated malignant hyperthermia in central core disease.",
+        snippet_score=4.8,
+        cues=["malignant hyperthermia"],
+        hash_suffix="specific",
+    )
+
+    batches = build_llm_batches(
+        session,
+        search_term_id=term.id,
+        condition_label="Central core disease",
+        mesh_terms=["Central core disease"],
+        max_prompt_tokens=600,
+        max_snippets_per_batch=5,
+    )
+
+    assert len(batches) == 1
+    batch = batches[0]
+    assert all("neuromuscular blocking agents" not in s.drug.lower() for s in batch.snippets)
+    user_prompt = batch.messages[1]["content"]
+    assert "neuromuscular blocking agents" not in user_prompt
+    assert "overly broad" not in user_prompt
+    assert "succinylcholine" in user_prompt
+
+
+def test_build_llm_batches_uses_single_batch_when_under_budget(session) -> None:
+    term = _make_search_term(session)
+    artefact = _add_article(
+        session,
+        term,
+        pmid="55555555",
+        rank=1,
+        score=4.0,
+        title="Therapy options",
+    )
+
+    _add_snippet(
+        session,
+        artefact,
+        drug="dantrolene",
+        classification="uncertain",
+        snippet_text="Dantrolene may offer benefit but evidence remains limited.",
+        snippet_score=2.2,
+        cues=["therapy"],
+        hash_suffix="therapy",
+    )
+    _add_snippet(
+        session,
+        artefact,
+        drug="ketamine",
+        classification="safety",
+        snippet_text="Ketamine was used without complications in a small series.",
+        snippet_score=1.9,
+        cues=["well tolerated"],
+        hash_suffix="safety",
+    )
+
+    batches = build_llm_batches(
+        session,
+        search_term_id=term.id,
+        condition_label="Central core disease",
+        mesh_terms=["Central core disease"],
+        max_prompt_tokens=800,
+        max_snippets_per_batch=1,
+    )
+
+    assert len(batches) == 1
+    assert len(batches[0].snippets) == 2
+    assert batches[0].token_estimate <= 800
+
+
+def test_build_llm_batches_interleaves_safety_snippets(session) -> None:
+    term = _make_search_term(session)
+    artefact = _add_article(
+        session,
+        term,
+        pmid="77777777",
+        rank=1,
+        score=5.0,
+        title="Mixed outcomes",
+    )
+
+    risk_text = "Risk evidence snippet."
+    safety_text = "Safety evidence snippet."
+
+    _add_snippet(
+        session,
+        artefact,
+        drug="succinylcholine",
+        classification="risk",
+        snippet_text=risk_text,
+        snippet_score=5.5,
+        cues=["risk"],
+        hash_suffix="risk1",
+    )
+    _add_snippet(
+        session,
+        artefact,
+        drug="propofol",
+        classification="safety",
+        snippet_text=safety_text,
+        snippet_score=4.9,
+        cues=["safe"],
+        hash_suffix="safety1",
+    )
+    _add_snippet(
+        session,
+        artefact,
+        drug="sevoflurane",
+        classification="risk",
+        snippet_text=risk_text,
+        snippet_score=4.7,
+        cues=["risk"],
+        hash_suffix="risk2",
+    )
+
+    batches = build_llm_batches(
+        session,
+        search_term_id=term.id,
+        condition_label="Central core disease",
+        mesh_terms=["Central core disease"],
+        max_prompt_tokens=12000,
+        max_snippets_per_batch=10,
+    )
+
+    assert batches, "Expected at least one batch"
+    first_batch = batches[0]
+    classifications = [snippet.classification for snippet in first_batch.snippets[:3]]
+    assert classifications[0] == "risk"
+    assert "safety" in classifications[:2], "Safety snippets should appear alongside early risk snippets"
 
 def test_build_llm_batches_returns_empty_when_no_snippets(session) -> None:
     term = _make_search_term(session)

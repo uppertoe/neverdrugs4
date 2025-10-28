@@ -187,6 +187,13 @@ class SnippetCandidate:
     cues: list[str]
 
 
+@dataclass(slots=True)
+class _SnippetWindow:
+    text: str
+    left: int
+    right: int
+
+
 class ArticleSnippetExtractor:
     def __init__(
         self,
@@ -237,13 +244,17 @@ class ArticleSnippetExtractor:
         require_condition = any(alias in lower_text for alias in condition_aliases)
 
         seen_keys: set[tuple[str, str]] = set()
+        occupied_windows: list[dict[str, object]] = []
         candidates: list[SnippetCandidate] = []
 
         for drug in self.drug_terms:
             pattern = re.compile(rf"\b{re.escape(drug)}\b")
             drug_group = resolve_drug_group(drug)
             for match in pattern.finditer(lower_text):
-                snippet = self._build_window(normalized_text, match.start(), match.end())
+                window = self._build_window(normalized_text, match.start(), match.end())
+                snippet = window.text
+                left_bound = window.left
+                right_bound = window.right
                 if len(snippet) < _MIN_SNIPPET_CHARS:
                     continue
                 snippet_lower = snippet.lower()
@@ -263,9 +274,11 @@ class ArticleSnippetExtractor:
                         continue
 
                 key = (drug, snippet_lower)
-                if key in seen_keys:
+                overlapping = _find_overlapping_window(occupied_windows, left_bound, right_bound)
+                if overlapping is not None and overlapping.get("drug") != drug:
+                    overlapping = None
+                if overlapping is None and key in seen_keys:
                     continue
-                seen_keys.add(key)
 
                 snippet_score = self._score_snippet(
                     article_score=article_score,
@@ -277,25 +290,57 @@ class ArticleSnippetExtractor:
                     ),
                 )
 
-                candidates.append(
-                    SnippetCandidate(
-                        pmid=pmid,
-                        drug=drug,
-                        classification=classification,
-                        snippet_text=snippet,
-                        article_rank=article_rank,
-                        article_score=article_score,
-                        preferred_url=preferred_url,
-                        pmc_ref_count=pmc_ref_count,
-                        snippet_score=snippet_score,
-                        cues=list(cues),
+                candidate_obj = SnippetCandidate(
+                    pmid=pmid,
+                    drug=drug,
+                    classification=classification,
+                    snippet_text=snippet,
+                    article_rank=article_rank,
+                    article_score=article_score,
+                    preferred_url=preferred_url,
+                    pmc_ref_count=pmc_ref_count,
+                    snippet_score=snippet_score,
+                    cues=list(cues),
+                )
+
+                if overlapping is not None:
+                    if snippet_score <= overlapping["score"]:
+                        continue
+                    old_key = overlapping["key"]
+                    if isinstance(old_key, tuple):
+                        seen_keys.discard(old_key)
+                    index = int(overlapping["index"])
+                    candidates[index] = candidate_obj
+                    overlapping.update(
+                        {
+                            "left": left_bound,
+                            "right": right_bound,
+                            "score": snippet_score,
+                            "key": key,
+                            "drug": drug,
+                        }
                     )
+                    seen_keys.add(key)
+                    continue
+
+                seen_keys.add(key)
+                index = len(candidates)
+                candidates.append(candidate_obj)
+                occupied_windows.append(
+                    {
+                        "left": left_bound,
+                        "right": right_bound,
+                        "score": snippet_score,
+                        "index": index,
+                        "key": key,
+                        "drug": drug,
+                    }
                 )
 
         candidates.sort(key=lambda item: (item.article_rank, -item.snippet_score))
         return candidates
 
-    def _build_window(self, text: str, start: int, end: int) -> str:
+    def _build_window(self, text: str, start: int, end: int) -> _SnippetWindow:
         left = max(0, start - self.window_chars)
         right = min(len(text), end + self.window_chars)
         snippet = text[left:right]
@@ -308,7 +353,13 @@ class ArticleSnippetExtractor:
         period_right = snippet.rfind(". ")
         if period_right != -1 and len(snippet) - period_right > self.window_chars // 2:
             snippet = snippet[: period_right + 1]
-        return snippet
+
+        snippet = snippet.strip()
+        adjusted_left = text.find(snippet, left, right) if snippet else left
+        if adjusted_left == -1:
+            adjusted_left = left
+        adjusted_right = adjusted_left + len(snippet)
+        return _SnippetWindow(text=snippet, left=adjusted_left, right=adjusted_right)
 
     def _classify(
         self, snippet_lower: str, drug: str, drug_roles: tuple[str, ...]
@@ -468,6 +519,23 @@ def _compute_quota(
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join(value.split())
+
+
+def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return not (a_end <= b_start or b_end <= a_start)
+
+
+def _find_overlapping_window(
+    windows: Sequence[dict[str, object]],
+    left: int,
+    right: int,
+) -> dict[str, object] | None:
+    for window in windows:
+        existing_left = int(window.get("left", 0))
+        existing_right = int(window.get("right", 0))
+        if _ranges_overlap(left, right, existing_left, existing_right):
+            return window
+    return None
 
 
 def _is_negated_risk_phrase(snippet_lower: str, cue: str) -> bool:

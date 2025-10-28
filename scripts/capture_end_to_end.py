@@ -189,8 +189,8 @@ def capture_end_to_end(
     *,
     search_term: str,
     output_path: Path,
-    max_pubmed_results: int,
-    max_full_text_articles: int,
+    max_pubmed_results: int | None = None,
+    max_full_text_articles: int | None = None,
 ) -> dict[str, object]:
     load_dotenv()
     engine = create_engine_for_url("sqlite+pysqlite:///:memory:")
@@ -202,6 +202,7 @@ def capture_end_to_end(
         timings: dict[str, float] = {}
         started_at = time.perf_counter()
         settings = load_settings()
+        article_defaults = settings.article_selection
 
         with _record_stage("resolve_condition_via_nih", timings):
             try:
@@ -223,8 +224,15 @@ def capture_end_to_end(
             .first()
         )
 
-        pubmed_searcher = NIHPubMedSearcher(retmax=max_pubmed_results)
-        selection_policy = FullTextSelectionPolicy(max_full_text=max_full_text_articles)
+        resolved_pubmed_limit = max_pubmed_results or article_defaults.pubmed_retmax
+        resolved_full_text_cap = max_full_text_articles or article_defaults.max_full_text_articles
+        pubmed_searcher = NIHPubMedSearcher(retmax=resolved_pubmed_limit)
+        selection_policy = FullTextSelectionPolicy(
+            base_full_text=article_defaults.base_full_text_articles,
+            max_full_text=resolved_full_text_cap,
+            max_token_budget=article_defaults.full_text_token_budget,
+            estimated_tokens_per_full_text=article_defaults.estimated_tokens_per_article,
+        )
         full_text_fetcher = NIHFullTextFetcher()
 
         selected_mesh_terms = list(resolution.mesh_terms)
@@ -359,14 +367,14 @@ def main() -> None:
     parser.add_argument(
         "--max-pubmed-results",
         type=int,
-        default=100,
-        help="Maximum PubMed results to request",
+        default=None,
+        help="Maximum PubMed results to request (defaults to settings)",
     )
     parser.add_argument(
         "--max-full-text-articles",
         type=int,
-        default=30,
-        help="Maximum number of articles to fetch in full",
+        default=None,
+        help="Maximum number of articles to fetch in full (defaults to settings)",
     )
     parser.add_argument(
         "--show-timings",

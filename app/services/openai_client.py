@@ -33,6 +33,7 @@ DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 DEFAULT_OPENAI_TEMPERATURE: float | None = None
 DEFAULT_OPENAI_MAX_RETRIES = 3
 DEFAULT_BACKOFF_SECONDS = 2.0
+DEFAULT_MAX_OUTPUT_TOKENS = 50000
 
 
 @dataclass(slots=True)
@@ -56,11 +57,12 @@ class OpenAIChatClient:
         *,
         api_key: str | None = None,
         model: str = DEFAULT_OPENAI_MODEL,
-    temperature: float | None = DEFAULT_OPENAI_TEMPERATURE,
+        temperature: float | None = DEFAULT_OPENAI_TEMPERATURE,
         max_retries: int = DEFAULT_OPENAI_MAX_RETRIES,
-    response_schema: dict[str, Any] | None = None,
+        response_schema: dict[str, Any] | None = None,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
         request_timeout: float | None = None,
+        max_output_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS,
         client: Any | None = None,
     ) -> None:
         self.model = model
@@ -68,6 +70,7 @@ class OpenAIChatClient:
         self.max_retries = max(1, max_retries)
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.request_timeout = request_timeout
+        self.max_output_tokens = max_output_tokens if max_output_tokens is None else max(1, max_output_tokens)
         self.response_schema = response_schema or {
             "type": "json_schema",
             "name": "llm_claims",
@@ -185,6 +188,8 @@ class OpenAIChatClient:
                 }
                 if self.temperature is not None:
                     request_payload["temperature"] = self.temperature
+                if self.max_output_tokens is not None:
+                    request_payload["max_output_tokens"] = self.max_output_tokens
                 response = self._client.responses.create(**request_payload)
                 content = _extract_content(response)
                 usage = _extract_usage(response)

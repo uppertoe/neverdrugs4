@@ -23,6 +23,7 @@ from app.tasks import refresh_claims_for_condition
 
 DEFAULT_REFRESH_STALE_SECONDS = 300
 DEFAULT_REFRESH_STALE_QUEUE_SECONDS = 60
+DEFAULT_EMPTY_RESULT_RETRY_SECONDS = 1800
 
 
 api_blueprint = Blueprint("api", __name__, url_prefix="/api")
@@ -144,6 +145,48 @@ def _refresh_can_retry(refresh: ClaimSetRefresh) -> bool:
     return refresh.status in {"failed", "no-batches", "no-responses"}
 
 
+def _empty_retry_threshold_seconds() -> int:
+    configured = current_app.config.get(
+        "REFRESH_EMPTY_RESULT_RETRY_SECONDS",
+        DEFAULT_EMPTY_RESULT_RETRY_SECONDS,
+    )
+    try:
+        threshold = int(configured)
+    except (TypeError, ValueError):
+        threshold = DEFAULT_EMPTY_RESULT_RETRY_SECONDS
+    return max(threshold, 0)
+
+
+def _refresh_empty_can_retry(refresh: ClaimSetRefresh) -> bool:
+    if refresh.status != "empty-results":
+        return False
+
+    timestamp = refresh.updated_at or refresh.created_at
+    if timestamp is None:
+        return True
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    age_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
+    return age_seconds >= _empty_retry_threshold_seconds()
+
+
+def _claim_set_empty_can_retry(claim_set: ProcessedClaimSet | None) -> bool:
+    if not claim_set or claim_set.claims:
+        return False
+
+    timestamp = claim_set.updated_at or claim_set.created_at
+    if timestamp is None:
+        return True
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    age_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
+    return age_seconds >= _empty_retry_threshold_seconds()
+
+
 def _refresh_is_stale(refresh: ClaimSetRefresh) -> bool:
     if refresh.status not in {"queued", "running"}:
         return False
@@ -186,6 +229,11 @@ def _serialise_refresh_job(
     claim_set: ProcessedClaimSet | None,
 ) -> dict:
     progress_details = refresh.progress_payload if isinstance(refresh.progress_payload, dict) else {}
+    can_retry = (
+        _refresh_can_retry(refresh)
+        or _refresh_is_stale(refresh)
+        or _refresh_empty_can_retry(refresh)
+    )
     return {
         "mesh_signature": refresh.mesh_signature,
         "job_id": refresh.job_id,
@@ -200,7 +248,7 @@ def _serialise_refresh_job(
         "claim_set_id": claim_set.id if claim_set else None,
         "claim_set_slug": claim_set.slug if claim_set else None,
         "resolution": _build_resolution_snapshot(refresh, claim_set, progress_details),
-        "can_retry": _refresh_can_retry(refresh) or _refresh_is_stale(refresh),
+        "can_retry": can_retry,
     }
 
 
@@ -281,13 +329,20 @@ def resolve_claims():
     refresh_url: str | None = None
     should_enqueue = False
     need_claim_set = claim_set is None
+    claim_set_empty = claim_set is not None and not claim_set.claims
     resolved_signature = mesh_signature or compute_mesh_signature(list(resolution.mesh_terms))
 
     if not mesh_signature:
         should_enqueue = True
     elif refresh_job is None:
-        should_enqueue = need_claim_set
-    elif _refresh_can_retry(refresh_job) or _refresh_is_stale(refresh_job):
+        should_enqueue = need_claim_set or _claim_set_empty_can_retry(claim_set)
+    elif (
+        _refresh_can_retry(refresh_job)
+        or _refresh_is_stale(refresh_job)
+        or _refresh_empty_can_retry(refresh_job)
+    ):
+        should_enqueue = True
+    elif claim_set_empty and _claim_set_empty_can_retry(claim_set):
         should_enqueue = True
 
     if should_enqueue:
@@ -324,6 +379,11 @@ def resolve_claims():
         if resolved_signature:
             refresh_url = f"/api/claims/refresh/{quote(resolved_signature, safe='')}"
     elif refresh_job is not None and refresh_job.status in {"queued", "running"}:
+        job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
+        signature_for_url = refresh_job.mesh_signature or resolved_signature
+        if signature_for_url:
+            refresh_url = f"/api/claims/refresh/{quote(signature_for_url, safe='')}"
+    elif refresh_job is not None and refresh_job.status == "empty-results":
         job_info = {"job_id": refresh_job.job_id, "status": refresh_job.status}
         signature_for_url = refresh_job.mesh_signature or resolved_signature
         if signature_for_url:

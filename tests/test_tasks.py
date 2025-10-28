@@ -27,7 +27,16 @@ def seeded_refresh(session_factory):
 
 
 def _settings_stub():
-    return SimpleNamespace(search=SimpleNamespace(refresh_ttl_seconds=3600))
+    return SimpleNamespace(
+        search=SimpleNamespace(refresh_ttl_seconds=3600),
+        article_selection=SimpleNamespace(
+            base_full_text_articles=20,
+            max_full_text_articles=50,
+            full_text_token_budget=240_000,
+            estimated_tokens_per_article=4_500,
+            pubmed_retmax=120,
+        ),
+    )
 
 
 @patch("app.tasks.persist_processed_claims")
@@ -61,6 +70,7 @@ def test_refresh_claims_invokes_pubmed_collection(
     client_instance = MagicMock()
     client_instance.run_batches.return_value = [SimpleNamespace()]
     openai_client_cls_mock.return_value = client_instance
+    persist_claims_mock.return_value = SimpleNamespace(claims=[SimpleNamespace()])
 
     result = refresh_claims_for_condition.apply(
         task_id="test-task-id",
@@ -122,6 +132,64 @@ def test_refresh_claims_returns_no_batches_after_collection(
     collect_articles_mock.assert_called_once()
     build_batches_mock.assert_called_once()
     openai_client_cls_mock.assert_not_called()
+
+
+@patch("app.tasks.persist_processed_claims")
+@patch("app.tasks.OpenAIChatClient")
+@patch("app.tasks.build_llm_batches")
+@patch("app.tasks.collect_pubmed_articles")
+@patch("app.tasks.resolve_condition_via_nih")
+@patch("app.tasks.create_session_factory")
+@patch("app.tasks.load_settings", side_effect=_settings_stub)
+@pytest.mark.usefixtures("seeded_refresh")
+def test_refresh_claims_records_empty_results(
+    load_settings_mock,
+    session_factory_mock,
+    resolve_condition_mock,
+    collect_articles_mock,
+    build_batches_mock,
+    openai_client_cls_mock,
+    persist_claims_mock,
+    session_factory,
+):
+    session_factory_mock.return_value = session_factory
+    fresh_resolution = SearchResolution(
+        normalized_condition="central core disease",
+        mesh_terms=["Central Core Disease"],
+        reused_cached=False,
+        search_term_id=404,
+    )
+    resolve_condition_mock.return_value = fresh_resolution
+
+    build_batches_mock.return_value = [SimpleNamespace()]
+    client_instance = MagicMock()
+    client_instance.run_batches.return_value = [SimpleNamespace()]
+    openai_client_cls_mock.return_value = client_instance
+    persist_claims_mock.return_value = SimpleNamespace(claims=[])
+
+    result = refresh_claims_for_condition.apply(
+        task_id="test-task-id",
+        kwargs={
+            "resolution_id": 4,
+            "condition_label": "Central Core Disease",
+            "normalized_condition": "central core disease",
+            "mesh_terms": ["Central Core Disease"],
+            "mesh_signature": "central-core",
+        },
+    )
+
+    assert result.result == "empty-results"
+
+    session = session_factory()
+    try:
+        refresh = session.execute(
+            select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == "test-task-id")
+        ).scalar_one()
+        assert refresh.status == "empty-results"
+        assert refresh.progress_state == "empty_results"
+        assert refresh.progress_payload.get("claim_count") == 0
+    finally:
+        session.close()
 
 
 @patch("app.tasks.collect_pubmed_articles")

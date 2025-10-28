@@ -7,10 +7,11 @@ from xml.etree import ElementTree
 import httpx
 
 from app.services.query_terms import build_nih_search_query
+from app.settings import DEFAULT_PUBMED_RETMAX
 
 DEFAULT_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 DEFAULT_TIMEOUT_SECONDS = 10.0
-DEFAULT_RETMAX = 20
+DEFAULT_RETMAX = DEFAULT_PUBMED_RETMAX
 FULL_TEXT_BOOST = 2.0
 ABSTRACT_BOOST = 0.4
 REVIEW_BOOST = 0.2

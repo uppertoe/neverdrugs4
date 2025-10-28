@@ -24,14 +24,20 @@ from app.services.snippets import (
     persist_snippet_candidates,
     select_top_snippets,
 )
+from app.settings import (
+    DEFAULT_BASE_FULL_TEXT_ARTICLES,
+    DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE,
+    DEFAULT_FULL_TEXT_TOKEN_BUDGET,
+    DEFAULT_MAX_FULL_TEXT_ARTICLES,
+)
 
 
 @dataclass(slots=True)
 class FullTextSelectionPolicy:
-    base_full_text: int = 12
-    max_full_text: int = 30
-    max_token_budget: int = 150_000
-    estimated_tokens_per_full_text: int = 4_500
+    base_full_text: int = DEFAULT_BASE_FULL_TEXT_ARTICLES
+    max_full_text: int = DEFAULT_MAX_FULL_TEXT_ARTICLES
+    max_token_budget: int = DEFAULT_FULL_TEXT_TOKEN_BUDGET
+    estimated_tokens_per_full_text: int = DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE
     bonus_score_threshold: float = 1.5
     require_score_cutoff: float = 0.0
     prefer_pmc: bool = True

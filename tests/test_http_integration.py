@@ -132,7 +132,7 @@ def test_resolve_and_poll_via_curl() -> None:
         pytest.fail("Timed out waiting for refresh job to finish")
 
     status = final_payload.get("status")
-    assert status in {"completed", "no-batches", "no-responses"}, status
+    assert status in {"completed", "no-batches", "no-responses", "empty-results"}, status
 
     final_resolution = final_payload.get("resolution") or {}
     assert final_resolution.get("normalized_condition") == expected_normalized
@@ -153,6 +153,9 @@ def test_resolve_and_poll_via_curl() -> None:
     elif status == "no-batches":
         details = (final_payload.get("progress") or {}).get("details", {})
         assert details.get("reason") == "no_llm_batches"
+    elif status == "empty-results":
+        details = (final_payload.get("progress") or {}).get("details", {})
+        assert details.get("claim_count") == 0
 
     second_payload = _curl_json(
         f"{_BASE_URL}/api/claims/resolve",
