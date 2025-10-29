@@ -47,8 +47,6 @@ def refresh_claims_for_condition(
         selection_policy = FullTextSelectionPolicy(
             base_full_text=article_defaults.base_full_text_articles,
             max_full_text=article_defaults.max_full_text_articles,
-            max_token_budget=article_defaults.full_text_token_budget,
-            estimated_tokens_per_full_text=article_defaults.estimated_tokens_per_article,
         )
         full_text_fetcher = NIHFullTextFetcher()
 

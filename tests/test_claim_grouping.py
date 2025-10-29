@@ -27,6 +27,8 @@ def _entry(
         article_title="title",
         content_source="pmc-full-text",
         token_estimate=120,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
     )
 
 

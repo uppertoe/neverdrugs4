@@ -13,6 +13,16 @@ from app.services.query_terms import build_nih_search_query
 
 _TOKEN_TRANSLATION = str.maketrans({ch: " " for ch in "-,/"})
 
+DEFAULT_DISALLOWED_EXTRA_TOKENS: tuple[str, ...] = (
+    "becker",
+    "mouse",
+    "mice",
+    "murine",
+    "veterinary",
+    "veterinarian",
+    "virology",
+)
+
 
 @dataclass(slots=True)
 class ESearchResult:
@@ -41,7 +51,7 @@ class NIHMeshBuilder:
         retmax: int = 5,
         timeout_seconds: float = 5.0,
         max_terms: int = 5,
-        disallowed_extra_tokens: Optional[set[str]] = None,
+    disallowed_extra_tokens: Optional[set[str]] = None,
         require_primary_token: bool = True,
     ) -> None:
         self._http_client = http_client
@@ -50,7 +60,11 @@ class NIHMeshBuilder:
         self.retmax = retmax
         self.timeout_seconds = timeout_seconds
         self.max_terms = max_terms
-        self.disallowed_extra_tokens = disallowed_extra_tokens or {"becker"}
+        self.disallowed_extra_tokens = (
+            set(disallowed_extra_tokens)
+            if disallowed_extra_tokens is not None
+            else set(DEFAULT_DISALLOWED_EXTRA_TOKENS)
+        )
         self.require_primary_token = require_primary_token
 
     def __call__(self, normalized_term: str) -> MeshBuildResult:
@@ -81,6 +95,7 @@ class NIHMeshBuilder:
         payload["esummary"] = {
             "primary_id": esearch.primary_id,
             "mesh_terms": esummary.mesh_terms,
+            "raw_xml": esummary.raw_xml,
         }
         payload["ranked_mesh_terms"] = [entry.to_dict() for entry in ranked_terms]
 

@@ -6,7 +6,9 @@ from xml.etree import ElementTree
 
 import httpx
 
-from app.services.query_terms import build_nih_search_query
+from app.services.mesh_builder import NIHMeshBuilder
+from app.services.query_terms import ConditionTermExpansion, ConditionTermExpander, build_nih_search_query
+from app.services.search import normalize_condition
 from app.settings import DEFAULT_PUBMED_RETMAX
 
 DEFAULT_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -66,6 +68,48 @@ class PubMedSearchResult:
     raw_esummary: str
 
 
+class MeshBuilderTermExpander:
+    """Resolve condition descriptors and close aliases using NIH MeSH data."""
+
+    def __init__(
+        self,
+        *,
+        mesh_builder: NIHMeshBuilder | None = None,
+        window_size: int = 6,
+    ) -> None:
+        self._mesh_builder = mesh_builder or NIHMeshBuilder()
+        self._window_size = max(1, window_size)
+        self._cache: dict[str, ConditionTermExpansion | None] = {}
+
+    def __call__(self, term: str) -> ConditionTermExpansion | None:
+        normalized = normalize_condition(term)
+        if not normalized:
+            return None
+        if normalized in self._cache:
+            return self._cache[normalized]
+
+        build_result = self._mesh_builder(normalized)
+        descriptor = _primary_descriptor(build_result)
+        if descriptor is None:
+            self._cache[normalized] = None
+            return None
+
+        alias_terms = _alias_terms_from_payload(
+            build_result.query_payload,
+            normalized,
+            window_size=self._window_size,
+        )
+        alias_terms.append(term.strip())
+        alias_terms = _dedupe_preserving_order(alias_terms)
+
+        expansion = ConditionTermExpansion(
+            mesh_terms=(descriptor,),
+            alias_terms=tuple(alias_terms),
+        )
+        self._cache[normalized] = expansion
+        return expansion
+
+
 class NIHPubMedSearcher:
     def __init__(
         self,
@@ -75,12 +119,14 @@ class NIHPubMedSearcher:
         database: str = "pubmed",
         retmax: int = DEFAULT_RETMAX,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        condition_term_expander: ConditionTermExpander | None = None,
     ) -> None:
         self._http_client = http_client
         self.base_url = base_url.rstrip("/")
         self.database = database
         self.retmax = retmax
         self.timeout_seconds = timeout_seconds
+        self._condition_term_expander = condition_term_expander or MeshBuilderTermExpander()
 
     def __call__(
         self,
@@ -91,6 +137,7 @@ class NIHPubMedSearcher:
         query = build_nih_search_query(
             condition_mesh_terms,
             additional_text_terms=additional_text_terms,
+            term_expander=self._condition_term_expander,
         )
         esearch_response = self._post(
             "esearch.fcgi",
@@ -217,6 +264,62 @@ def _find_text(element: ElementTree.Element, tag: str) -> Optional[str]:
         return None
     value = node.text.strip()
     return value or None
+
+
+def _primary_descriptor(build_result: Any) -> str | None:
+    payload = getattr(build_result, "query_payload", None)
+    if isinstance(payload, dict):
+        esummary = payload.get("esummary")
+        if isinstance(esummary, dict):
+            candidates = [str(entry) for entry in esummary.get("mesh_terms", []) if entry]
+            if candidates:
+                return candidates[0]
+    mesh_terms = getattr(build_result, "mesh_terms", None)
+    if mesh_terms:
+        for entry in mesh_terms:
+            if entry:
+                return str(entry)
+    return None
+
+
+def _alias_terms_from_payload(
+    payload: Any,
+    normalized_query: str,
+    *,
+    window_size: int,
+) -> list[str]:
+    if not normalized_query or not isinstance(payload, dict):
+        return []
+    esummary = payload.get("esummary")
+    if not isinstance(esummary, dict):
+        return []
+    candidates = [str(entry) for entry in esummary.get("mesh_terms", []) if entry]
+    if not candidates:
+        return []
+
+    normalized_candidates = [normalize_condition(candidate) for candidate in candidates]
+    if normalized_query not in normalized_candidates:
+        return []
+
+    index = normalized_candidates.index(normalized_query)
+    start = max(0, index - window_size)
+    end = min(len(candidates), index + window_size + 1)
+    return candidates[start:end]
+
+
+def _dedupe_preserving_order(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(cleaned)
+    return ordered
 
 
 def _find_item_text(docsum: ElementTree.Element, name: str) -> Optional[str]:

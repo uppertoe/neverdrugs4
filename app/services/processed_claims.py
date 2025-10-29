@@ -37,6 +37,8 @@ class _AggregatedClaim:
     drug_classes: list[str]
     source_claim_ids: list[str] = field(default_factory=list)
     evidence: "OrderedDict[str, _AggregatedEvidence]" = field(default_factory=OrderedDict)
+    severe_reaction_flag: bool = False
+    severe_reaction_terms: list[str] = field(default_factory=list)
 
 
 def persist_processed_claims(
@@ -81,6 +83,8 @@ def persist_processed_claims(
             drugs=list(aggregated_claim.drugs),
             drug_classes=list(aggregated_claim.drug_classes),
             source_claim_ids=list(aggregated_claim.source_claim_ids),
+            severe_reaction_flag=aggregated_claim.severe_reaction_flag,
+            severe_reaction_terms=list(aggregated_claim.severe_reaction_terms),
         )
         session.add(stored_claim)
 
@@ -155,6 +159,7 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
             confidence = (claim.get("confidence") or "low").strip().lower()
             summary = claim.get("summary") or ""
             claim_id = claim.get("claim_id") or key
+            severe_flag, severe_terms = _parse_severe_reaction(claim.get("severe_reaction"))
 
             aggregated_claim = aggregated.get(key)
             if aggregated_claim is None:
@@ -169,6 +174,8 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                 aggregated[key] = aggregated_claim
             else:
                 _update_claim_metadata(aggregated_claim, claim_id, summary, confidence)
+
+            _merge_severe_reaction(aggregated_claim, severe_flag, severe_terms)
 
             if claim_id not in aggregated_claim.source_claim_ids:
                 aggregated_claim.source_claim_ids.append(claim_id)
@@ -188,6 +195,44 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                     )
 
     return _reduce_redundant_claims(aggregated)
+
+
+def _parse_severe_reaction(value: object) -> tuple[bool, list[str]]:
+    if value is None:
+        return False, []
+    if isinstance(value, bool):
+        return bool(value), []
+    if not isinstance(value, dict):
+        return False, []
+
+    raw_flag = value.get("flag")
+    terms_source = value.get("terms") or []
+    cleaned_terms: list[str] = []
+    for term in terms_source:
+        cleaned = _clean_str(term)
+        if cleaned:
+            cleaned_terms.append(cleaned)
+    unique_terms = list(dict.fromkeys(cleaned_terms))
+    flag = bool(raw_flag) or bool(unique_terms)
+    return flag, unique_terms
+
+
+def _merge_severe_reaction(
+    aggregated_claim: _AggregatedClaim,
+    flag: bool,
+    terms: Sequence[str],
+) -> None:
+    if flag:
+        aggregated_claim.severe_reaction_flag = True
+    if not terms:
+        return
+    existing = aggregated_claim.severe_reaction_terms
+    seen = {term.lower(): None for term in existing}
+    for term in terms:
+        key = term.lower()
+        if key not in seen:
+            existing.append(term)
+            seen[key] = None
 
 
 def _coerce_payload(payload: object) -> dict:

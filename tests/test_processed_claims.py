@@ -87,6 +87,10 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
                     "drugs": ["succinylcholine"],
                     "summary": "Succinylcholine may trigger malignant hyperthermia.",
                     "confidence": "medium",
+                    "severe_reaction": {
+                        "flag": True,
+                        "terms": ["anaphylaxis"],
+                    },
                     "supporting_evidence": [
                         {
                             "snippet_id": str(snippet_one.id),
@@ -111,6 +115,10 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
                     "drugs": ["succinylcholine"],
                     "summary": "Evidence from multiple reports indicates succinylcholine precipitates crises.",
                     "confidence": "high",
+                    "severe_reaction": {
+                        "flag": True,
+                        "terms": ["Cardiac arrest"],
+                    },
                     "supporting_evidence": [
                         {
                             "snippet_id": str(snippet_two.id),
@@ -155,6 +163,8 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
         "risk:succinylcholine",
         "risk:succinylcholine-duplicate",
     }
+    assert stored_claim.severe_reaction_flag is True
+    assert stored_claim.severe_reaction_terms == ["anaphylaxis", "Cardiac arrest"]
 
     evidence_entries = stored_claim.evidence
     assert len(evidence_entries) == 2
@@ -186,6 +196,8 @@ def test_persist_processed_claims_replaces_existing_set(session) -> None:
         drugs=["old"],
         drug_classes=[],
         source_claim_ids=["old"],
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
     )
     old_set.claims.append(old_claim)
     session.add(old_set)

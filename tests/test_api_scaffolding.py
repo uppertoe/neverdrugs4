@@ -45,6 +45,8 @@ def _seed_processed_claim_set(
         drugs=["succinylcholine"],
         drug_classes=["depolarising neuromuscular blocker"],
         source_claim_ids=["risk:succinylcholine"],
+        severe_reaction_flag=True,
+        severe_reaction_terms=["cardiac arrest"],
     )
     session.add(claim)
     session.flush()
@@ -95,6 +97,7 @@ def test_get_processed_claim_returns_serialised_payload(client, session):
     assert claim_payload["drugs"] == ["succinylcholine"]
     assert claim_payload["drug_classes"] == ["depolarising neuromuscular blocker"]
     assert claim_payload["source_claim_ids"] == ["risk:succinylcholine"]
+    assert claim_payload["severe_reaction"] == {"flag": True, "terms": ["cardiac arrest"]}
 
     evidence_payload = claim_payload["supporting_evidence"][0]
     assert evidence_payload["snippet_id"] == "42"

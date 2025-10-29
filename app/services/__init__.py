@@ -2,8 +2,24 @@ from .full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubm
 from .snippets import (
     ArticleSnippetExtractor,
     SnippetCandidate,
+    SnippetResult,
     persist_snippet_candidates,
-    select_top_snippets,
+)
+from .snippet_pipeline import (
+    SnippetExtractionPipeline,
+    SnippetPipelineConfig,
+    SnippetPostProcessor,
+)
+from .snippet_postprocessors import (
+    EnsureClassificationCoverage,
+    LimitPerDrugPostProcessor,
+)
+from .snippet_pruning import apply_article_quotas
+from .snippet_tuning import (
+    SnippetArticleInput,
+    TuningResult,
+    generate_quota_grid,
+    grid_search_pipeline_configs,
 )
 from .mesh_builder import NIHMeshBuilder
 from .nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
@@ -16,14 +32,24 @@ __all__ = [
     "NIHPubMedSearcher",
     "NIHFullTextFetcher",
     "ArticleSnippetExtractor",
+    "SnippetExtractionPipeline",
+    "SnippetPipelineConfig",
+    "SnippetPostProcessor",
+    "EnsureClassificationCoverage",
+    "LimitPerDrugPostProcessor",
     "MeshBuildResult",
     "PubMedArticle",
     "PubMedSearchResult",
     "SearchResolution",
     "collect_pubmed_articles",
     "SnippetCandidate",
+    "SnippetResult",
     "persist_snippet_candidates",
-    "select_top_snippets",
+    "apply_article_quotas",
+    "SnippetArticleInput",
+    "TuningResult",
+    "generate_quota_grid",
+    "grid_search_pipeline_configs",
     "MeshTermsNotFoundError",
     "resolve_condition_via_nih",
     "resolve_search_input",

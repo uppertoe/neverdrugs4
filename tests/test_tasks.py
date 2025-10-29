@@ -32,8 +32,6 @@ def _settings_stub():
         article_selection=SimpleNamespace(
             base_full_text_articles=20,
             max_full_text_articles=50,
-            full_text_token_budget=240_000,
-            estimated_tokens_per_article=4_500,
             pubmed_retmax=120,
         ),
     )

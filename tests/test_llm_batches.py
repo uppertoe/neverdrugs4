@@ -27,6 +27,8 @@ def test_render_user_prompt_downranks_generic_groups() -> None:
         article_title="title",
         content_source="pubmed",
         token_estimate=120,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
     )
 
     group = ClaimEvidenceGroup[
@@ -188,6 +190,7 @@ def test_build_llm_batches_respects_token_budget_and_orders_snippets(session) ->
         assert "Return only JSON" in user_content
         assert '"claims"' in user_content
         assert '"supporting_evidence"' in user_content
+        assert '"severe_reaction"' in user_content
         # Ensure snippet metadata is present
         for snippet in batch.snippets:
             assert snippet.citation_url.startswith("https://pubmed")
@@ -306,13 +309,13 @@ def test_build_llm_batches_uses_single_batch_when_under_budget(session) -> None:
         search_term_id=term.id,
         condition_label="Central core disease",
         mesh_terms=["Central core disease"],
-        max_prompt_tokens=800,
-        max_snippets_per_batch=1,
+        max_prompt_tokens=900,
+        max_snippets_per_batch=2,
     )
 
     assert len(batches) == 1
     assert len(batches[0].snippets) == 2
-    assert batches[0].token_estimate <= 800
+    assert batches[0].token_estimate <= 900
 
 
 def test_build_llm_batches_interleaves_safety_snippets(session) -> None:

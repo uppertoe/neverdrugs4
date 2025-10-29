@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.services.nih_pubmed import NIHPubMedSearcher, PubMedArticle
+from app.services.query_terms import ConditionTermExpansion
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -27,6 +28,13 @@ class _SequencedHttpClient:
         return self._responses.pop(0)
 
 
+def _passthrough_expander(term: str) -> ConditionTermExpansion:
+    cleaned = (term or "").strip()
+    if not cleaned:
+        return ConditionTermExpansion(mesh_terms=(), alias_terms=())
+    return ConditionTermExpansion(mesh_terms=(cleaned,), alias_terms=(cleaned,))
+
+
 def test_pubmed_search_returns_ranked_articles() -> None:
     esearch_xml = (FIXTURES / "pubmed_esearch_duchenne.xml").read_text(encoding="utf-8")
     esummary_xml = (FIXTURES / "pubmed_esummary_top5.xml").read_text(encoding="utf-8")
@@ -34,7 +42,7 @@ def test_pubmed_search_returns_ranked_articles() -> None:
         _FakeResponse(esearch_xml),
         _FakeResponse(esummary_xml),
     ])
-    searcher = NIHPubMedSearcher(http_client=http_client, retmax=5)
+    searcher = NIHPubMedSearcher(http_client=http_client, retmax=5, condition_term_expander=_passthrough_expander)
 
     result = searcher([
         "Muscular Dystrophy, Duchenne",
@@ -89,7 +97,7 @@ def test_pubmed_search_prefers_pmc_when_doi_missing() -> None:
         _FakeResponse(esearch_xml),
         _FakeResponse(esummary_xml),
     ])
-    searcher = NIHPubMedSearcher(http_client=http_client, retmax=1)
+    searcher = NIHPubMedSearcher(http_client=http_client, retmax=1, condition_term_expander=_passthrough_expander)
 
     result = searcher(["Example Condition"])
 
@@ -107,7 +115,7 @@ def test_pubmed_search_falls_back_to_pubmed_when_no_preferred_ids() -> None:
         _FakeResponse(esearch_xml),
         _FakeResponse(esummary_xml),
     ])
-    searcher = NIHPubMedSearcher(http_client=http_client, retmax=1)
+    searcher = NIHPubMedSearcher(http_client=http_client, retmax=1, condition_term_expander=_passthrough_expander)
 
     result = searcher(["Another Example"])
 
@@ -119,8 +127,8 @@ def test_pubmed_search_falls_back_to_pubmed_when_no_preferred_ids() -> None:
 
 
 def test_pubmed_search_prioritises_full_text_and_citations() -> None:
-        esearch_xml = """<?xml version='1.0'?><eSearchResult><Count>2</Count><RetMax>2</RetMax><RetStart>0</RetStart><IdList><Id>111</Id><Id>222</Id></IdList></eSearchResult>"""
-        esummary_xml = """<?xml version='1.0'?>
+    esearch_xml = """<?xml version='1.0'?><eSearchResult><Count>2</Count><RetMax>2</RetMax><RetStart>0</RetStart><IdList><Id>111</Id><Id>222</Id></IdList></eSearchResult>"""
+    esummary_xml = """<?xml version='1.0'?>
 <eSummaryResult>
     <DocSum>
         <Id>111</Id>
@@ -154,17 +162,21 @@ def test_pubmed_search_prioritises_full_text_and_citations() -> None:
     </DocSum>
 </eSummaryResult>
 """
-        http_client = _SequencedHttpClient([
-                _FakeResponse(esearch_xml),
-                _FakeResponse(esummary_xml),
-        ])
-        searcher = NIHPubMedSearcher(http_client=http_client, retmax=2)
+    http_client = _SequencedHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_xml),
+    ])
+    searcher = NIHPubMedSearcher(
+        http_client=http_client,
+        retmax=2,
+        condition_term_expander=_passthrough_expander,
+    )
 
-        result = searcher(["Example Condition"])
+    result = searcher(["Example Condition"])
 
-        assert [article.pmid for article in result.articles] == ["222", "111"]
-        ranked_first = result.articles[0]
-        assert ranked_first.pmc_id == "PMC12345"
-        assert ranked_first.has_abstract is True
-        assert ranked_first.pmc_ref_count == 10
-        assert ranked_first.score > result.articles[1].score
+    assert [article.pmid for article in result.articles] == ["222", "111"]
+    ranked_first = result.articles[0]
+    assert ranked_first.pmc_id == "PMC12345"
+    assert ranked_first.has_abstract is True
+    assert ranked_first.pmc_ref_count == 10
+    assert ranked_first.score > result.articles[1].score

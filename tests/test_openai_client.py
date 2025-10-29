@@ -40,6 +40,8 @@ def _make_batch() -> LLMRequestBatch:
         article_title="Example Article",
         content_source="pubmed",
         token_estimate=120,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
     )
     messages = [
         {"role": "system", "content": "System"},

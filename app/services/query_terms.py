@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Callable, Iterable, Sequence
+
+
+@dataclass(frozen=True)
+class ConditionTermExpansion:
+    mesh_terms: tuple[str, ...]
+    alias_terms: tuple[str, ...] = ()
+
+
+ConditionTermExpander = Callable[[str], ConditionTermExpansion | None]
 
 ANESTHESIA_MESH_TERMS: tuple[str, ...] = (
     "Anesthesia",
@@ -38,63 +48,162 @@ DRUG_MESH_TERMS: tuple[str, ...] = (
     "Analgesics, Non-Narcotic",
     "Neuromuscular Blocking Agents",
     "Hypnotics and Sedatives",
+    "Cholinesterase Inhibitors",
+    "Cyclodextrins",
+    "Parasympatholytics",
+    "Adrenergic Agonists",
+    "Adrenergic beta-Antagonists",
+    "Vasodilator Agents",
+    "Cephalosporins",
+    "Cyclooxygenase 2 Inhibitors",
+    "Antiemetics",
+    "Serotonin Antagonists",
+    "Adrenal Cortex Hormones",
+    "Glucagon",
+    "Calcium Compounds",
+    "Ringer's Lactate",
+    "Anticonvulsants",
+    "Anti-Arrhythmia Agents",
+    "Nitrates",
+    "Adenosine",
+    "Muscle Relaxants, Central",
+    "Sodium Chloride",
 )
 
+# Expand class and agent coverage to mirror the stocked perioperative drug trolley.
 DRUG_TEXT_TERMS: tuple[str, ...] = (
+    # Analgesics and sedatives
     "analgesic opioid",
-    "atracurium",
-    "benzodiazepine",
-    "benzodiazepines",
-    "bupivacaine",
-    "cefazolin",
-    "cisatracurium",
-    "dantrolene",
-    "dexamethasone",
-    "dexmedetomidine",
-    "desflurane",
-    "etomidate",
-    "fentanyl",
-    "halothane",
-    "inhalational",
-    "inhalational anaesthetic",
-    "inhalational anesthetic",
-    "inhaled",
-    "inhaled anaesthetic",
-    "inhaled anesthetic",
-    "isoflurane",
-    "ketamine",
-    "levobupivacaine",
-    "lidocaine",
-    "lignocaine",
-    "local anaesthetic",
-    "local anesthetic",
-    "midazolam",
-    "mivacurium",
-    "morphine",
-    "muscle relaxant",
-    "muscle relaxants",
-    "neuromuscular",
-    "neuromuscular blockade",
-    "neuromuscular blocking agent",
-    "nitrous oxide",
-    "ondansetron",
     "opioid",
     "opioids",
-    "pancuronium",
-    "propofol",
+    "morphine",
+    "fentanyl",
     "remifentanil",
-    "remimazolam",
-    "rocuronium",
-    "ropivacaine",
+    "parecoxib",
+    "benzodiazepine",
+    "benzodiazepines",
+    "midazolam",
+    "propofol",
+    "ketamine",
+    # Volatile and inhalational agents
+    "volatile anaesthetic",
+    "volatile anaesthetics",
+    "volatile anesthetic",
+    "volatile anesthetics",
+    "volatile agent",
+    "volatile agents",
+    "inhalational anaesthetic",
+    "inhalational anesthetic",
+    "desflurane",
+    "isoflurane",
     "sevoflurane",
-    "sugammadex",
+    # Neuromuscular blockade and reversal
+    "neuromuscular blockade",
+    "neuromuscular blocker",
+    "neuromuscular blockers",
+    "neuromuscular blocking agent",
+    "neuromuscular blocking agents",
+    "muscle relaxant",
+    "muscle relaxants",
     "succinylcholine",
-    "thiopental",
-    "vecuronium",
-    "volatile",
+    "rocuronium",
+    "atracurium",
+    "sugammadex",
+    "neostigmine",
+    "atropine",
+    # Crisis and rescue agents
+    "dantrolene",
+    "adrenaline",
+    "epinephrine",
+    "noradrenaline",
+    "norepinephrine",
+    "glucagon",
+    "calcium gluconate",
+    # Perioperative adjuncts
+    "lidocaine",
+    "lignocaine",
+    "cefazolin",
+    "dexamethasone",
+    "ondansetron",
+    "metoclopramide",
+    "hyoscine",
+    "hartmann's solution",
+    "hartmanns solution",
+    "sodium chloride",
+    # Hemodynamic agents
+    "hydralazine",
+    "gtn",
+    "glyceryl trinitrate",
+    "sodium nitroprusside",
+    "amiodarone",
+    "metoprolol",
+    "adenosine",
+    # Neurologic and anticonvulsant
+    "levetiracetam",
+)
+
+# Focus query narrowing on class-level language while leaving the richer list above
+# available for downstream snippet extraction.
+DRUG_QUERY_TEXT_TERMS: tuple[str, ...] = (
+    "analgesic opioid",
+    "opioid",
+    "opioids",
+    "benzodiazepine",
+    "benzodiazepines",
     "volatile anaesthetic",
     "volatile anesthetic",
-    "xenon",
+    "volatile anaesthetics",
+    "volatile anesthetics",
+    "volatile agent",
+    "volatile agents",
+    "inhalational anaesthetic",
+    "inhalational anesthetic",
+    "neuromuscular blockade",
+    "neuromuscular blocker",
+    "neuromuscular blockers",
+    "neuromuscular blocking agent",
+    "neuromuscular blocking agents",
+    "muscle relaxant",
+    "muscle relaxants",
+    "hartmann's solution",
+    "hartmanns solution",
+    "sodium chloride",
+)
+
+CLINICAL_CONTEXT_MESH_TERMS: tuple[str, ...] = (
+    "Critical Care",
+    "Critical Care Outcomes",
+    "Emergency Medicine",
+    "Emergency Treatment",
+    "Intensive Care Units",
+    "Perioperative Care",
+    "Perioperative Period",
+    "Resuscitation",
+)
+
+CLINICAL_CONTEXT_TEXT_TERMS: tuple[str, ...] = (
+    "critical care",
+    "intensive care",
+    "icu",
+    "anaesthetic emergency",
+    "emergency department",
+    "emergency medicine",
+    "perioperative",
+    "rapid sequence induction",
+    "resuscitation",
+)
+
+FOCUSED_PUBLICATION_TYPES: tuple[str, ...] = (
+    "Review",
+    "Systematic Review",
+    "Meta-Analysis",
+    "Case Reports",
+    "Clinical Study",
+    "Observational Study",
+)
+
+HUMAN_SUBJECTS_TERMS: tuple[str, ...] = (
+    "Humans",
 )
 
 
@@ -102,18 +211,38 @@ def build_nih_search_query(
     condition_mesh_terms: Sequence[str],
     *,
     additional_text_terms: Iterable[str] | None = None,
+    term_expander: ConditionTermExpander | None = None,
 ) -> str:
     """Build a PubMed-compatible query targeting anesthetic drugs for a condition."""
-    normalized_mesh_terms = [term for term in condition_mesh_terms if term]
+    mesh_terms: list[str] = []
+    text_terms: list[str] = []
+
+    for raw_term in condition_mesh_terms:
+        if not raw_term:
+            continue
+        term = raw_term.strip()
+        if not term:
+            continue
+        expansion = term_expander(term) if term_expander else None
+        if expansion:
+            mesh_terms.extend(expansion.mesh_terms)
+            if expansion.alias_terms:
+                text_terms.extend(expansion.alias_terms)
+            text_terms.append(term)
+            continue
+        mesh_terms.append(term)
+        text_terms.append(term)
+
+    normalized_mesh_terms = _dedupe_preserving_order(mesh_terms)
     if not normalized_mesh_terms:
         raise ValueError("At least one condition MeSH term is required to build a query")
 
     condition_mesh_clause = _build_or_clause(normalized_mesh_terms, field="mesh")
 
-    condition_text_terms: set[str] = set(normalized_mesh_terms)
+    condition_text_terms: list[str] = _dedupe_preserving_order(text_terms)
     if additional_text_terms:
-        condition_text_terms.update(term for term in additional_text_terms if term)
-    condition_text_clause = _build_or_clause(sorted(condition_text_terms), field="tiab")
+        condition_text_terms.extend(term.strip() for term in additional_text_terms if term)
+    condition_text_clause = _build_or_clause(sorted(set(filter(None, condition_text_terms))), field="tiab")
 
     condition_clause = _wrap_or(condition_mesh_clause, condition_text_clause)
 
@@ -121,7 +250,10 @@ def build_nih_search_query(
     anesthesia_text_clause = _build_or_clause(ANESTHESIA_TEXT_TERMS, field="tiab")
 
     drug_mesh_clause = _build_or_clause(DRUG_MESH_TERMS, field="mesh")
-    drug_text_clause = _build_or_clause(DRUG_TEXT_TERMS, field="tiab")
+    drug_text_clause = _build_or_clause(DRUG_QUERY_TEXT_TERMS, field="tiab")
+
+    context_mesh_clause = _build_or_clause(CLINICAL_CONTEXT_MESH_TERMS, field="mesh")
+    context_text_clause = _build_or_clause(CLINICAL_CONTEXT_TEXT_TERMS, field="tiab")
 
     extra_text_clause = None
     if additional_text_terms:
@@ -129,14 +261,18 @@ def build_nih_search_query(
 
     anesthesia_clause = _wrap_or(anesthesia_mesh_clause, anesthesia_text_clause)
     drug_clause = _wrap_or(drug_mesh_clause, drug_text_clause)
+    context_clause = _wrap_or(context_mesh_clause, context_text_clause)
 
-    support_clauses = [anesthesia_clause, drug_clause]
+    support_clauses = [anesthesia_clause, drug_clause, context_clause]
     if extra_text_clause:
         support_clauses.append(extra_text_clause)
 
     support_clause = _wrap_or(*support_clauses)
 
-    return f"{condition_clause} AND {support_clause}"
+    human_clause = _build_or_clause(HUMAN_SUBJECTS_TERMS, field="mesh")
+    publication_clause = _build_or_clause(FOCUSED_PUBLICATION_TYPES, field="pt")
+
+    return _combine_and(condition_clause, support_clause, human_clause, publication_clause)
 
 
 def _build_or_clause(terms: Sequence[str], *, field: str) -> str:
@@ -153,3 +289,26 @@ def _wrap_or(*clauses: str) -> str:
     if len(filtered) == 1:
         return filtered[0]
     return f"({ ' OR '.join(filtered) })"
+
+
+def _combine_and(*clauses: str) -> str:
+    filtered = [clause for clause in clauses if clause]
+    if not filtered:
+        return ""
+    if len(filtered) == 1:
+        return filtered[0]
+    return " AND ".join(filtered)
+
+
+def _dedupe_preserving_order(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(value)
+    return ordered

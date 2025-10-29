@@ -9,6 +9,7 @@ from app.services.snippets import (
     SnippetCandidate,
     persist_snippet_candidates,
 )
+from app.services.snippet_tags import Tag
 
 
 def _make_article(session, *, pmid: str, rank: int, score: float) -> ArticleArtefact:
@@ -47,6 +48,9 @@ def test_persist_snippet_candidates_inserts_new_rows(session) -> None:
             pmc_ref_count=40,
             snippet_score=5.2,
             cues=["avoid", "malignant hyperthermia"],
+            tags=[
+                Tag(kind="risk", label="avoid", confidence=1.0, source="rule"),
+            ],
         )
     ]
 
@@ -62,6 +66,14 @@ def test_persist_snippet_candidates_inserts_new_rows(session) -> None:
     assert stored.classification == "risk"
     assert stored.snippet_score == pytest.approx(5.2)
     assert stored.cues == ["avoid", "malignant hyperthermia"]
+    assert stored.tags == [
+        {
+            "kind": "risk",
+            "label": "avoid",
+            "confidence": 1.0,
+            "source": "rule",
+        }
+    ]
 
 
 def test_persist_snippet_candidates_updates_existing(session) -> None:
@@ -96,6 +108,9 @@ def test_persist_snippet_candidates_updates_existing(session) -> None:
         pmc_ref_count=26,
         snippet_score=3.1,
         cues=["safe", "no complications"],
+        tags=[
+            Tag(kind="safety", label="safe", confidence=1.0, source="rule"),
+        ],
     )
     persist_snippet_candidates(
         session,
@@ -107,3 +122,11 @@ def test_persist_snippet_candidates_updates_existing(session) -> None:
     assert stored.snippet_score == pytest.approx(3.1)
     assert stored.snippet_text.endswith("complications.")
     assert stored.cues == ["safe", "no complications"]
+    assert stored.tags == [
+        {
+            "kind": "safety",
+            "label": "safe",
+            "confidence": 1.0,
+            "source": "rule",
+        }
+    ]

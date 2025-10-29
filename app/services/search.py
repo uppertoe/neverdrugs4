@@ -208,7 +208,11 @@ def _should_refresh_artefact(artefact: SearchArtefact, threshold_seconds: int | 
         return False
     if artefact.last_refreshed_at is None:
         return True
-    age = datetime.now(timezone.utc) - artefact.last_refreshed_at
+    refreshed_at = artefact.last_refreshed_at
+    if refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
+    now = datetime.now(refreshed_at.tzinfo or timezone.utc)
+    age = now - refreshed_at
     return age.total_seconds() >= threshold_seconds
 
 

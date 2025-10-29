@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Dict, Optional, Sequence
+from typing import Dict, Optional, Sequence
 from xml.etree import ElementTree
 
 import httpx
@@ -18,16 +18,18 @@ from app.services.nih_pubmed import (
     PubMedArticle,
 )
 from app.services.search import SearchResolution
+from app.services.snippet_pipeline import (
+    SnippetExtractionPipeline,
+    SnippetPipelineConfig,
+    SnippetPostProcessor,
+)
 from app.services.snippets import (
     ArticleSnippetExtractor,
     SnippetCandidate,
     persist_snippet_candidates,
-    select_top_snippets,
 )
 from app.settings import (
     DEFAULT_BASE_FULL_TEXT_ARTICLES,
-    DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE,
-    DEFAULT_FULL_TEXT_TOKEN_BUDGET,
     DEFAULT_MAX_FULL_TEXT_ARTICLES,
 )
 
@@ -36,31 +38,23 @@ from app.settings import (
 class FullTextSelectionPolicy:
     base_full_text: int = DEFAULT_BASE_FULL_TEXT_ARTICLES
     max_full_text: int = DEFAULT_MAX_FULL_TEXT_ARTICLES
-    max_token_budget: int = DEFAULT_FULL_TEXT_TOKEN_BUDGET
-    estimated_tokens_per_full_text: int = DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE
     bonus_score_threshold: float = 1.5
     require_score_cutoff: float = 0.0
     prefer_pmc: bool = True
 
     def select(self, articles: Sequence[PubMedArticle]) -> list[PubMedArticle]:
-        if not articles or self.max_full_text <= 0 or self.max_token_budget <= 0:
+        if not articles or self.max_full_text <= 0:
             return []
 
         max_candidates = min(len(articles), self.max_full_text)
         if max_candidates == 0:
             return []
 
-        if self.estimated_tokens_per_full_text <= 0:
-            allowed_by_budget = max_candidates
-        else:
-            allowed_by_budget = self.max_token_budget // self.estimated_tokens_per_full_text
-
-        initial_count = min(self.base_full_text, max_candidates, allowed_by_budget)
-        if initial_count == 0 and self.base_full_text > 0 and self.max_token_budget > 0:
+        initial_count = min(self.base_full_text, max_candidates)
+        if initial_count == 0 and self.base_full_text > 0:
             initial_count = min(1, max_candidates)
 
         selected_indices: set[int] = set(range(initial_count))
-        total_tokens = initial_count * max(1, self.estimated_tokens_per_full_text)
         max_indices = min(self.max_full_text, len(articles))
 
         for idx in range(initial_count, len(articles)):
@@ -69,16 +63,11 @@ class FullTextSelectionPolicy:
             article = articles[idx]
             if article.score < self.require_score_cutoff:
                 continue
-            projected_tokens = total_tokens + max(1, self.estimated_tokens_per_full_text)
-            if projected_tokens > self.max_token_budget:
-                break
             if self.prefer_pmc and article.pmc_id:
                 selected_indices.add(idx)
-                total_tokens = projected_tokens
                 continue
             if article.score >= self.bonus_score_threshold:
                 selected_indices.add(idx)
-                total_tokens = projected_tokens
 
         ordered_indices = sorted(selected_indices)
         return [articles[idx] for idx in ordered_indices]
@@ -249,7 +238,9 @@ def collect_pubmed_articles(
     full_text_fetcher: NIHFullTextFetcher,
     selection_policy: FullTextSelectionPolicy | None = None,
     snippet_extractor: ArticleSnippetExtractor | None = None,
-    snippet_selector: Callable[[Sequence[SnippetCandidate]], list[SnippetCandidate]] | None = None,
+    snippet_pipeline: SnippetExtractionPipeline | None = None,
+    snippet_pipeline_config: SnippetPipelineConfig | None = None,
+    snippet_post_processors: Sequence[SnippetPostProcessor] | None = None,
 ) -> list[ArticleArtefact]:
     policy = selection_policy or FullTextSelectionPolicy()
     search_result = pubmed_searcher(search_resolution.mesh_terms)
@@ -286,6 +277,16 @@ def collect_pubmed_articles(
     if search_resolution.normalized_condition:
         condition_terms.append(search_resolution.normalized_condition)
 
+    if snippet_pipeline is not None:
+        pipeline = snippet_pipeline
+    else:
+        config = snippet_pipeline_config or SnippetPipelineConfig()
+        pipeline = SnippetExtractionPipeline(
+            extractor=extractor,
+            post_processors=tuple(snippet_post_processors or ()),
+            config=config,
+        )
+
     snippet_candidates: list[SnippetCandidate] = []
     for artefact in persisted_articles:
         content = contents.get(artefact.pmid)
@@ -302,7 +303,7 @@ def collect_pubmed_articles(
         except (TypeError, ValueError):
             pmc_ref_count = 0
 
-        extracted = extractor.extract_snippets(
+        extracted = pipeline.run(
             article_text=text,
             pmid=artefact.pmid,
             condition_terms=condition_terms,
@@ -314,12 +315,10 @@ def collect_pubmed_articles(
         snippet_candidates.extend(extracted)
 
     if snippet_candidates:
-        selector = snippet_selector or select_top_snippets
-        selected_snippets = selector(snippet_candidates)
         persist_snippet_candidates(
             session,
             article_artefacts=persisted_articles,
-            snippet_candidates=selected_snippets,
+            snippet_candidates=snippet_candidates,
         )
 
     return persisted_articles

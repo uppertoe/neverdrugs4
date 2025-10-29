@@ -38,6 +38,10 @@ _SAMPLE_RESPONSE_JSON = (
     "      \"drugs\": [\"succinylcholine\"],\n"
     "      \"summary\": \"Succinylcholine repeatedly precipitated malignant hyperthermia in the cited reports.\",\n"
     "      \"confidence\": \"high\",\n"
+    "      \"severe_reaction\": {\n"
+    "        \"flag\": true,\n"
+    "        \"terms\": [\"anaphylaxis\"]\n"
+    "      },\n"
     "      \"supporting_evidence\": [\n"
     "        {\n"
     "          \"snippet_id\": \"4\",\n"
@@ -71,6 +75,8 @@ class SnippetLLMEntry:
     article_title: str | None
     content_source: str | None
     token_estimate: int
+    severe_reaction_flag: bool
+    severe_reaction_terms: list[str]
 
 
 @dataclass(slots=True)
@@ -191,6 +197,32 @@ def build_llm_batches(
     return batches
 
 
+def _extract_severe_reaction_from_tags(tags: Iterable[object]) -> tuple[bool, list[str]]:
+    if not tags:
+        return False, []
+
+    terms: list[str] = []
+    for tag in tags:
+        if tag is None:
+            continue
+        if isinstance(tag, dict):
+            if tag.get("kind") != "severe_reaction":
+                continue
+            label = str(tag.get("label") or "").strip()
+        else:
+            if getattr(tag, "kind", None) != "severe_reaction":
+                continue
+            label = str(getattr(tag, "label", "")).strip()
+        if label:
+            terms.append(label)
+
+    if not terms:
+        return False, []
+
+    unique_terms = list(dict.fromkeys(terms))
+    return True, unique_terms
+
+
 def _collect_snippet_entries(session: Session, *, search_term_id: int) -> list[SnippetLLMEntry]:
     articles: Iterable[ArticleArtefact] = (
         session.query(ArticleArtefact)
@@ -207,6 +239,7 @@ def _collect_snippet_entries(session: Session, *, search_term_id: int) -> list[S
         article_title = citation.get("title")
         for snippet in sorted(article.snippets, key=lambda s: (-s.snippet_score, s.drug.lower())):
             token_estimate = _estimate_snippet_tokens(snippet.snippet_text)
+            severe_flag, severe_terms = _extract_severe_reaction_from_tags(snippet.tags or [])
             entries.append(
                 SnippetLLMEntry(
                     pmid=article.pmid,
@@ -222,6 +255,8 @@ def _collect_snippet_entries(session: Session, *, search_term_id: int) -> list[S
                     article_title=article_title,
                     content_source=article.content_source,
                     token_estimate=token_estimate,
+                    severe_reaction_flag=severe_flag,
+                    severe_reaction_terms=severe_terms,
                 )
             )
 
@@ -247,6 +282,10 @@ def _render_user_prompt(
         '      "drugs": ["string"],\n'
         '      "summary": "string",\n'
         '      "confidence": "low | medium | high",\n'
+    '      "severe_reaction": {\n'
+    '        "flag": true | false,\n'
+    '        "terms": ["string"]\n'
+    "      },\n"
         '      "supporting_evidence": [\n'
         "        {\n"
         '          "snippet_id": "string",\n'
@@ -266,6 +305,8 @@ def _render_user_prompt(
     for idx, snippet in enumerate(snippets, start=1):
         cues_line = ", ".join(snippet.cues) if snippet.cues else "none"
         title = snippet.article_title or "(no title provided)"
+        severe_label = "yes" if snippet.severe_reaction_flag else "no"
+        severe_terms = ", ".join(snippet.severe_reaction_terms) if snippet.severe_reaction_terms else "none"
         snippet_identifier = (
             str(snippet.snippet_id) if snippet.snippet_id is not None else f"{snippet.pmid}-s{idx}"
         )
@@ -281,6 +322,7 @@ def _render_user_prompt(
                 f"   article_rank: {snippet.article_rank}\n"
                 f"   source_url: {snippet.citation_url}\n"
                 f"   cues: {cues_line}\n"
+                f"   severe_reaction: {severe_label} (terms: {severe_terms})\n"
                 f"   snippet: {snippet.snippet_text.replace('\n', ' ').strip()}"
             )
         )
@@ -341,7 +383,8 @@ def _render_user_prompt(
         "2. Merge supporting snippets per claim and cite every snippet_id you rely on.\n"
         "3. If evidence conflicts, create separate claims and explain the disagreement in the summary or notes.\n"
         "4. Keep key_points concise (1–2 sentences) and grounded in the cited text; do not invent new facts.\n"
-        "5. Output valid JSON conforming to the schema.\n\n"
+        "5. Use severe_reaction.flag when the snippet describes an unexpected, clinically serious reaction (e.g., anaphylaxis, cardiac arrest, refractory seizures). Populate severe_reaction.terms with the exact descriptors from the snippets; leave it empty only when flag is false.\n"
+        "6. Output valid JSON conforming to the schema.\n\n"
     )
 
     context_block = (
@@ -356,7 +399,8 @@ def _render_user_prompt(
         "REFERENCE\n"
         "- snippet_id: stable identifier for citation.\n"
         "- article_rank: lower values indicate higher priority articles.\n"
-        "- cues: keywords that triggered initial classification; verify them before relying on them.\n\n"
+        "- cues: keywords that triggered initial classification; verify them before relying on them.\n"
+        "- severe_reaction: yes indicates the snippet already signals a severe reaction and lists the descriptors detected.\n\n"
     )
 
     return (

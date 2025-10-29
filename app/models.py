@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -111,6 +122,7 @@ class ArticleSnippet(Base):
     snippet_text: Mapped[str] = mapped_column(Text, nullable=False)
     snippet_score: Mapped[float] = mapped_column(Float, nullable=False)
     cues: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    tags: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False
@@ -175,6 +187,8 @@ class ProcessedClaim(Base):
     drugs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     drug_classes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     source_claim_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    severe_reaction_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    severe_reaction_terms: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), nullable=False
     )

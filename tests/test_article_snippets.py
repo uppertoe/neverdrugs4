@@ -5,7 +5,8 @@ from typing import Sequence
 
 import pytest
 
-from app.services.snippets import ArticleSnippetExtractor, SnippetCandidate, select_top_snippets
+from app.services.snippets import ArticleSnippetExtractor, SnippetCandidate
+from app.services.snippet_tags import Tag
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -67,6 +68,7 @@ def test_extract_snippets_flags_succinylcholine_risk() -> None:
 
     matching = [s for s in snippets if s.drug == "succinylcholine" and s.classification == "risk"]
     assert matching, "Expected to find at least one succinylcholine risk snippet"
+    assert any(isinstance(tag, Tag) and tag.kind == "risk" for tag in matching[0].tags)
     snippet = matching[0]
     text = snippet.snippet_text.lower()
     assert (
@@ -96,55 +98,11 @@ def test_extract_snippets_captures_propofol_safety() -> None:
 
     matching = [s for s in snippets if s.drug == "propofol" and s.classification == "safety"]
     assert matching, "Expected propofol safety snippet"
+    assert any(isinstance(tag, Tag) and tag.kind == "safety" for tag in matching[0].tags)
     snippet = matching[0]
     assert "safe" in snippet.snippet_text.lower() or "no complications" in snippet.snippet_text.lower()
     assert snippet.article_rank == 3
     assert snippet.pmc_ref_count == 26
-
-
-def test_select_top_snippets_scales_with_article_weight() -> None:
-    candidates = [
-        SnippetCandidate(
-            pmid="39618072",
-            drug="succinylcholine",
-            classification="risk",
-            snippet_text=f"snippet {idx}",
-            article_rank=1,
-            article_score=4.5,
-            preferred_url="https://doi.org/10.12659/MSM.945675",
-            pmc_ref_count=40,
-            snippet_score=5.0 - idx * 0.2,
-            cues=["avoided"],
-        )
-        for idx in range(5)
-    ]
-
-    low_weight_candidates = [
-        SnippetCandidate(
-            pmid="15859443",
-            drug="propofol",
-            classification="safety",
-            snippet_text=f"low {idx}",
-            article_rank=3,
-            article_score=1.1,
-            preferred_url="https://doi.org/10.2344/0003-3006(2005)52[12:CIPGAF]2.0.CO;2",
-            pmc_ref_count=0,
-            snippet_score=1.0 - idx * 0.1,
-            cues=["safe"],
-        )
-        for idx in range(4)
-    ]
-
-    selection = select_top_snippets(candidates + low_weight_candidates)
-
-    high_article_snippets = [c for c in selection if c.pmid == "39618072"]
-    low_article_snippets = [c for c in selection if c.pmid == "15859443"]
-
-    assert len(high_article_snippets) == 5  # reaches max quota for highly cited article
-    assert len(low_article_snippets) == 3  # limited to updated baseline quota
-    # ensure snippets are sorted by per-article score
-    scores = [c.snippet_score for c in low_article_snippets]
-    assert scores == sorted(scores, reverse=True)
 
 
 def test_extract_snippets_labels_dantrolene_treatment_as_safety() -> None:

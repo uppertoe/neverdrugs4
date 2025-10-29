@@ -70,6 +70,10 @@ def _serialise_claim(claim: ProcessedClaim) -> dict:
         "drugs": list(claim.drugs),
         "drug_classes": list(claim.drug_classes),
         "source_claim_ids": list(claim.source_claim_ids),
+        "severe_reaction": {
+            "flag": bool(claim.severe_reaction_flag),
+            "terms": list(claim.severe_reaction_terms),
+        },
         "supporting_evidence": [
             _serialise_evidence(evidence)
             for evidence in sorted(claim.evidence, key=lambda e: e.id)

@@ -214,3 +214,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# MeSH cache artefacts
+.mesh_cache/
+
+tuning_test.db

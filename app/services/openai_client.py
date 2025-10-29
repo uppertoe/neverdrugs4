@@ -102,6 +102,18 @@ class OpenAIChatClient:
                                     "type": "string",
                                     "enum": ["low", "medium", "high"],
                                 },
+                                "severe_reaction": {
+                                    "type": "object",
+                                    "properties": {
+                                        "flag": {"type": "boolean"},
+                                        "terms": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
+                                    },
+                                    "required": ["flag", "terms"],
+                                    "additionalProperties": False,
+                                },
                                 "supporting_evidence": {
                                     "type": "array",
                                     "items": {
@@ -134,6 +146,7 @@ class OpenAIChatClient:
                                 "drugs",
                                 "summary",
                                 "confidence",
+                                "severe_reaction",
                                 "supporting_evidence",
                             ],
                             "additionalProperties": False,

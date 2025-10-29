@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Iterable, Literal, Sequence
 
 from sqlalchemy import select
@@ -11,95 +10,18 @@ from sqlalchemy.orm import Session
 from app.models import ArticleArtefact, ArticleSnippet
 from app.services.drug_classes import resolve_drug_group
 from app.services.query_terms import DRUG_TEXT_TERMS
-
-_NEGATING_RISK_PATTERNS: tuple[str, ...] = (
-    "no {}",
-    "not {}",
-    "without {}",
-    "absence of {}",
-    "does not cause {}",
-    "did not cause {}",
-    "doesn't cause {}",
-    "didn't cause {}",
-    "not associated with {}",
-    "no evidence of {}",
+from app.services.snippet_candidates import (
+    RegexSnippetCandidateFinder,
+    SnippetCandidateFinder,
+    SnippetSpan,
 )
-
-DEFAULT_RISK_CUES: tuple[str, ...] = (
-    "adverse",
-    "adverse event",
-    "adverse events",
-    "arrhythmia",
-    "arrhythmias",
-    "avoid",
-    "avoided",
-    "cardiac arrest",
-    "complication",
-    "complications",
-    "contraindicated",
-    "contraindication",
-    "contraindications",
-    "caution",
-    "danger",
-    "deterioration",
-    "do not use",
-    "exacerbate",
-    "exacerbated",
-    "fatal",
-    "harmful",
-    "hazard",
-    "hyperkalemia",
-    "hyperkalaemia",
-    "life-threatening",
-    "malignant hyperthermia",
-    "mh",
-    "precaution",
-    "precipitate",
-    "risk",
-    "risk of",
-    "rhabdomyolysis",
-    "serious adverse",
-    "should not",
-    "side effect",
-    "side effects",
-    "toxic",
-    "toxicity",
-    "trigger",
-    "triggered",
-    "triggering",
-    "unsafe",
-    "worsened",
+from app.services.snippet_pruning import WindowedCandidate, prune_window_overlaps
+from app.services.snippet_scoring import (
+    SnippetScoringConfig,
+    score_snippet_with_config,
 )
-DEFAULT_SAFETY_CUES: tuple[str, ...] = (
-    "acceptable safety",
-    "beneficial",
-    "did not cause",
-    "effective",
-    "generally safe",
-    "no adverse event",
-    "no adverse events",
-    "no complications",
-    "no major complications",
-    "no reported complications",
-    "no significant adverse",
-    "recommended",
-    "safe",
-    "safe option",
-    "safely",
-    "safety",
-    "successfully",
-    "tolerated well",
-    "well tolerated",
-    "well-tolerated",
-    "without complications",
-    "ameliorated",
-    "ameliorate",
-    "prevent",
-    "preventative",
-    "indicated",
-    "efficacious",
-    "efficacy",
-)
+from app.services.snippet_tags import DEFAULT_RISK_CUES, DEFAULT_SAFETY_CUES, NEGATING_RISK_PATTERNS, Tag
+from app.services.snippet_tagger import RuleBasedSnippetTagger, SnippetTagger
 THERAPY_ROLE_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
     "mh-therapy": {
         "condition_terms": ("malignant hyperthermia", "mh"),
@@ -185,13 +107,14 @@ class SnippetCandidate:
     pmc_ref_count: int
     snippet_score: float
     cues: list[str]
+    tags: list[Tag] = field(default_factory=list)
 
 
 @dataclass(slots=True)
-class _SnippetWindow:
-    text: str
-    left: int
-    right: int
+class SnippetResult:
+    candidate: SnippetCandidate
+    span: SnippetSpan
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class ArticleSnippetExtractor:
@@ -202,11 +125,25 @@ class ArticleSnippetExtractor:
         risk_cues: Sequence[str] = DEFAULT_RISK_CUES,
         safety_cues: Sequence[str] = DEFAULT_SAFETY_CUES,
         window_chars: int = DEFAULT_WINDOW_CHARS,
+        min_snippet_chars: int = _MIN_SNIPPET_CHARS,
+        tagger: SnippetTagger | None = None,
+        candidate_finder: SnippetCandidateFinder | None = None,
+        scoring_config: SnippetScoringConfig | None = None,
     ) -> None:
         self.drug_terms = tuple(sorted({term.lower() for term in drug_terms if term}))
         self.risk_cues = tuple(cue.lower() for cue in risk_cues)
         self.safety_cues = tuple(cue.lower() for cue in safety_cues)
         self.window_chars = max(100, window_chars)
+        self.candidate_finder = candidate_finder or RegexSnippetCandidateFinder(
+            drug_terms=self.drug_terms,
+            window_chars=self.window_chars,
+        )
+        self.tagger = tagger or RuleBasedSnippetTagger(
+            risk_cues=self.risk_cues,
+            safety_cues=self.safety_cues,
+        )
+        self.min_snippet_chars = max(30, min_snippet_chars)
+        self.scoring_config = scoring_config
         self.therapy_role_patterns = {
             role: {
                 "condition_terms": tuple(
@@ -231,6 +168,28 @@ class ArticleSnippetExtractor:
         preferred_url: str,
         pmc_ref_count: int,
     ) -> list[SnippetCandidate]:
+        results = self.extract_snippet_results(
+            article_text=article_text,
+            pmid=pmid,
+            condition_terms=condition_terms,
+            article_rank=article_rank,
+            article_score=article_score,
+            preferred_url=preferred_url,
+            pmc_ref_count=pmc_ref_count,
+        )
+        return [result.candidate for result in results]
+
+    def extract_snippet_results(
+        self,
+        *,
+        article_text: str,
+        pmid: str,
+        condition_terms: Sequence[str],
+        article_rank: int,
+        article_score: float,
+        preferred_url: str,
+        pmc_ref_count: int,
+    ) -> list[SnippetResult]:
         if not article_text:
             return []
 
@@ -243,21 +202,25 @@ class ArticleSnippetExtractor:
         # Only enforce condition matching when the article actually references one of the aliases.
         require_condition = any(alias in lower_text for alias in condition_aliases)
 
-        seen_keys: set[tuple[str, str]] = set()
-        occupied_windows: list[dict[str, object]] = []
-        candidates: list[SnippetCandidate] = []
+        windowed_candidates: list[WindowedCandidate] = []
 
         for drug in self.drug_terms:
-            pattern = re.compile(rf"\b{re.escape(drug)}\b")
             drug_group = resolve_drug_group(drug)
-            for match in pattern.finditer(lower_text):
-                window = self._build_window(normalized_text, match.start(), match.end())
-                snippet = window.text
-                left_bound = window.left
-                right_bound = window.right
-                if len(snippet) < _MIN_SNIPPET_CHARS:
+            for span in self.candidate_finder.find_candidates(
+                article_text=normalized_text,
+                normalized_text=normalized_text,
+                lower_text=lower_text,
+                drug=drug,
+            ):
+                snippet = span.text
+                if len(snippet) < self.min_snippet_chars:
                     continue
                 snippet_lower = snippet.lower()
+                tags = self.tagger.tag_snippet(
+                    snippet,
+                    drug=drug,
+                    condition_terms=condition_terms,
+                )
                 snippet_matches_condition = any(
                     alias in snippet_lower for alias in condition_aliases
                 )
@@ -273,14 +236,11 @@ class ArticleSnippetExtractor:
                     else:
                         continue
 
-                key = (drug, snippet_lower)
-                overlapping = _find_overlapping_window(occupied_windows, left_bound, right_bound)
-                if overlapping is not None and overlapping.get("drug") != drug:
-                    overlapping = None
-                if overlapping is None and key in seen_keys:
-                    continue
+                severe_tags = [tag.label for tag in tags if tag.kind == "severe_reaction"]
+                therapy_roles = [tag.label for tag in tags if tag.kind == "therapy_role"]
+                mechanism_alerts = [tag.label for tag in tags if tag.kind == "mechanism_alert"]
 
-                snippet_score = self._score_snippet(
+                snippet_score = score_snippet_with_config(
                     article_score=article_score,
                     pmc_ref_count=pmc_ref_count,
                     classification=classification,
@@ -288,7 +248,22 @@ class ArticleSnippetExtractor:
                     condition_match=(
                         snippet_matches_condition or not require_condition or inferred_condition
                     ),
+                    config=self.scoring_config,
                 )
+
+                metadata = {
+                    "condition_matched": snippet_matches_condition,
+                    "condition_inferred": inferred_condition,
+                    "require_condition": require_condition,
+                    "drug_roles": drug_group.roles,
+                }
+                if severe_tags:
+                    metadata["severe_reaction_flag"] = True
+                    metadata["severe_reaction_terms"] = tuple(sorted({tag for tag in severe_tags}))
+                if therapy_roles:
+                    metadata["therapy_roles"] = tuple(sorted({role for role in therapy_roles}))
+                if mechanism_alerts:
+                    metadata["mechanism_alerts"] = tuple(sorted({alert for alert in mechanism_alerts}))
 
                 candidate_obj = SnippetCandidate(
                     pmid=pmid,
@@ -301,65 +276,34 @@ class ArticleSnippetExtractor:
                     pmc_ref_count=pmc_ref_count,
                     snippet_score=snippet_score,
                     cues=list(cues),
+                    tags=list(tags),
                 )
-
-                if overlapping is not None:
-                    if snippet_score <= overlapping["score"]:
-                        continue
-                    old_key = overlapping["key"]
-                    if isinstance(old_key, tuple):
-                        seen_keys.discard(old_key)
-                    index = int(overlapping["index"])
-                    candidates[index] = candidate_obj
-                    overlapping.update(
-                        {
-                            "left": left_bound,
-                            "right": right_bound,
-                            "score": snippet_score,
-                            "key": key,
-                            "drug": drug,
-                        }
+                key = (drug, snippet_lower)
+                windowed_candidates.append(
+                    WindowedCandidate(
+                        candidate=candidate_obj,
+                        span=span,
+                        key=key,
+                        metadata=metadata,
                     )
-                    seen_keys.add(key)
-                    continue
-
-                seen_keys.add(key)
-                index = len(candidates)
-                candidates.append(candidate_obj)
-                occupied_windows.append(
-                    {
-                        "left": left_bound,
-                        "right": right_bound,
-                        "score": snippet_score,
-                        "index": index,
-                        "key": key,
-                        "drug": drug,
-                    }
                 )
 
-        candidates.sort(key=lambda item: (item.article_rank, -item.snippet_score))
-        return candidates
-
-    def _build_window(self, text: str, start: int, end: int) -> _SnippetWindow:
-        left = max(0, start - self.window_chars)
-        right = min(len(text), end + self.window_chars)
-        snippet = text[left:right]
-        snippet = snippet.strip()
-
-        # Attempt to trim to sentence boundaries for readability
-        period_left = snippet.find(". ")
-        if period_left != -1 and period_left < self.window_chars // 2:
-            snippet = snippet[period_left + 2 :]
-        period_right = snippet.rfind(". ")
-        if period_right != -1 and len(snippet) - period_right > self.window_chars // 2:
-            snippet = snippet[: period_right + 1]
-
-        snippet = snippet.strip()
-        adjusted_left = text.find(snippet, left, right) if snippet else left
-        if adjusted_left == -1:
-            adjusted_left = left
-        adjusted_right = adjusted_left + len(snippet)
-        return _SnippetWindow(text=snippet, left=adjusted_left, right=adjusted_right)
+        pruned = prune_window_overlaps(windowed_candidates)
+        results = [
+            SnippetResult(
+                candidate=entry.candidate,
+                span=entry.span,
+                metadata=dict(entry.metadata or {}),
+            )
+            for entry in pruned
+        ]
+        results.sort(
+            key=lambda item: (
+                item.candidate.article_rank,
+                -item.candidate.snippet_score,
+            )
+        )
+        return results
 
     def _classify(
         self, snippet_lower: str, drug: str, drug_roles: tuple[str, ...]
@@ -460,86 +404,12 @@ class ArticleSnippetExtractor:
             start = idx + len(drug)
         return False
 
-    def _score_snippet(
-        self,
-        *,
-        article_score: float,
-        pmc_ref_count: int,
-        classification: Literal["risk", "safety"],
-        cue_count: int,
-        condition_match: bool,
-    ) -> float:
-        score = article_score
-        score += min(pmc_ref_count / 40.0, 2.0)
-        score += 0.5 if classification == "risk" else 0.3
-        score += 0.1 * cue_count
-        score += 0.4 if condition_match else -0.2
-        return round(score, 4)
-
-
-def select_top_snippets(
-    candidates: Sequence[SnippetCandidate],
-    *,
-    base_quota: int = 3,
-    max_quota: int = 8,
-) -> list[SnippetCandidate]:
-    if not candidates:
-        return []
-
-    grouped: dict[str, list[SnippetCandidate]] = {}
-    for candidate in candidates:
-        grouped.setdefault(candidate.pmid, []).append(candidate)
-
-    selected: list[SnippetCandidate] = []
-    for pmid, items in grouped.items():
-        items_sorted = sorted(items, key=lambda s: s.snippet_score, reverse=True)
-        quota = _compute_quota(items_sorted[0], base_quota=base_quota, max_quota=max_quota)
-        selected.extend(items_sorted[:quota])
-
-    # Order by article rank, then snippet score descending
-    selected.sort(key=lambda s: (s.article_rank, -s.snippet_score))
-    return selected
-
-
-def _compute_quota(
-    candidate: SnippetCandidate,
-    *,
-    base_quota: int,
-    max_quota: int,
-) -> int:
-    quota = base_quota
-    if candidate.pmc_ref_count >= 10:
-        quota += 1
-    if candidate.pmc_ref_count >= 30:
-        quota += 1
-    if candidate.article_score >= 4.0:
-        quota += 1
-    return min(max_quota, quota)
-
-
 def _normalize_whitespace(value: str) -> str:
     return " ".join(value.split())
 
 
-def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-    return not (a_end <= b_start or b_end <= a_start)
-
-
-def _find_overlapping_window(
-    windows: Sequence[dict[str, object]],
-    left: int,
-    right: int,
-) -> dict[str, object] | None:
-    for window in windows:
-        existing_left = int(window.get("left", 0))
-        existing_right = int(window.get("right", 0))
-        if _ranges_overlap(left, right, existing_left, existing_right):
-            return window
-    return None
-
-
 def _is_negated_risk_phrase(snippet_lower: str, cue: str) -> bool:
-    for pattern in _NEGATING_RISK_PATTERNS:
+    for pattern in NEGATING_RISK_PATTERNS:
         formatted = pattern.format(cue)
         if formatted in snippet_lower:
             return True
@@ -563,7 +433,8 @@ def persist_snippet_candidates(
         if artefact is None:
             continue
 
-        snippet_hash = _compute_snippet_hash(candidate.snippet_text)
+        record = _serialize_candidate(candidate)
+        snippet_hash = record["snippet_hash"]
         stmt = select(ArticleSnippet).where(
             ArticleSnippet.article_artefact_id == artefact.id,
             ArticleSnippet.snippet_hash == snippet_hash,
@@ -573,22 +444,18 @@ def persist_snippet_candidates(
         if existing is None:
             snippet = ArticleSnippet(
                 article_artefact_id=artefact.id,
-                snippet_hash=snippet_hash,
-                drug=candidate.drug,
-                classification=candidate.classification,
-                snippet_text=candidate.snippet_text,
-                snippet_score=candidate.snippet_score,
-                cues=list(candidate.cues),
+                **record,
             )
             session.add(snippet)
             persisted.append(snippet)
             continue
 
-        existing.drug = candidate.drug
-        existing.classification = candidate.classification
-        existing.snippet_text = candidate.snippet_text
-        existing.snippet_score = candidate.snippet_score
-        existing.cues = list(candidate.cues)
+        existing.drug = record["drug"]
+        existing.classification = record["classification"]
+        existing.snippet_text = record["snippet_text"]
+        existing.snippet_score = record["snippet_score"]
+        existing.cues = record["cues"]
+        existing.tags = record["tags"]
         persisted.append(existing)
 
     session.flush()
@@ -598,3 +465,31 @@ def persist_snippet_candidates(
 def _compute_snippet_hash(snippet_text: str) -> str:
     normalized = _normalize_whitespace(snippet_text).lower().encode("utf-8")
     return hashlib.sha1(normalized).hexdigest()
+
+
+def _serialize_tags(tags: Sequence[Tag] | None) -> list[dict[str, object]]:
+    if not tags:
+        return []
+
+    serialized: list[dict[str, object]] = []
+    for tag in tags:
+        if isinstance(tag, Tag):
+            serialized.append(asdict(tag))
+        elif isinstance(tag, dict):
+            serialized.append(dict(tag))
+        else:
+            msg = f"Cannot serialize tag of type {type(tag)!r}"
+            raise TypeError(msg)
+    return serialized
+
+
+def _serialize_candidate(candidate: SnippetCandidate) -> dict[str, object]:
+    return {
+        "snippet_hash": _compute_snippet_hash(candidate.snippet_text),
+        "drug": candidate.drug,
+        "classification": candidate.classification,
+        "snippet_text": candidate.snippet_text,
+        "snippet_score": candidate.snippet_score,
+        "cues": list(candidate.cues),
+        "tags": _serialize_tags(candidate.tags),
+    }

@@ -51,6 +51,45 @@ def test_mesh_builder_returns_ranked_terms() -> None:
     assert http_client.calls[1][1]["id"] == "68020388"
 
 
+def test_mesh_builder_filters_disallowed_extra_tokens() -> None:
+    esearch_xml = """<?xml version='1.0' encoding='UTF-8'?>
+<eSearchResult>
+    <Count>3</Count>
+    <IdList>
+        <Id>12345</Id>
+    </IdList>
+</eSearchResult>
+"""
+    esummary_xml = """<?xml version='1.0' encoding='UTF-8'?>
+<eSummaryResult>
+    <DocSum>
+        <Id>12345</Id>
+        <Item Name="DS_MeshTerms" Type="List">
+            <Item Name="string" Type="String">Rare Muscle Disease</Item>
+            <Item Name="string" Type="String">Rare Muscle Disease Veterinary</Item>
+            <Item Name="string" Type="String">Rare Muscle Disease Mice</Item>
+            <Item Name="string" Type="String">Rare Muscle Disease Virology</Item>
+            <Item Name="string" Type="String">Rare Muscle Disease Adult</Item>
+        </Item>
+    </DocSum>
+</eSummaryResult>
+"""
+    http_client = _SequentialHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_xml),
+    ])
+    builder = NIHMeshBuilder(http_client=http_client, max_terms=5)
+
+    result = builder("rare muscle disease")
+
+    assert result.mesh_terms == [
+        "Rare Muscle Disease",
+        "Rare Muscle Disease Adult",
+    ]
+    for banned in ("veterinary", "mice", "virology"):
+        assert all(banned not in term.lower() for term in result.mesh_terms)
+
+
 def test_mesh_builder_handles_missing_ids() -> None:
     empty_esearch = """<?xml version='1.0' encoding='UTF-8'?><eSearchResult><Count>0</Count><IdList></IdList></eSearchResult>"""
     http_client = _SequentialHttpClient([

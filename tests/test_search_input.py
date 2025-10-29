@@ -250,6 +250,36 @@ def test_resolve_search_refreshes_stale_cache_with_changes(session: Session) -> 
     assert updated.result_signature == "sig:v2"
 
 
+def test_resolve_search_refresh_handles_naive_timestamp(session: Session) -> None:
+    stale_timestamp = (datetime.now(timezone.utc) - timedelta(days=8)).replace(tzinfo=None)
+    cached_term = seed_cached_search(
+        session,
+        last_refreshed_at=stale_timestamp,
+        result_signature="sig:v1",
+    )
+    builder = RecordingBuilder(mesh_terms=["Duchenne Muscular Dystrophy"])
+    espell = RecordingESpell()
+    hasher = RecordingResultHasher({"Duchenne Muscular Dystrophy": "sig:v1"})
+
+    result = resolve_search_input(
+        "Duchenne",
+        session=session,
+        mesh_builder=builder,
+        espell_fetcher=espell,
+        refresh_ttl_seconds=7 * 24 * 60 * 60,
+        result_signature_provider=hasher,
+    )
+
+    assert result.reused_cached is True
+    refreshed = session.query(SearchTerm).filter_by(id=cached_term.id).one()
+    artefact = refreshed.artefacts[0]
+    refreshed_at = artefact.last_refreshed_at
+    comparison_baseline = stale_timestamp
+    if refreshed_at.tzinfo is not None and comparison_baseline.tzinfo is None:
+        comparison_baseline = comparison_baseline.replace(tzinfo=refreshed_at.tzinfo)
+    assert refreshed_at > comparison_baseline
+
+
 def test_resolve_condition_via_nih_reuses_cached_when_ranked_results_identical(
     session: Session,
 ) -> None:

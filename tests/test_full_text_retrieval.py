@@ -113,12 +113,10 @@ def _make_article(
     )
 
 
-def test_full_text_selection_prefers_pmc_within_budget() -> None:
+def test_full_text_selection_respects_maximum_limit() -> None:
     policy = FullTextSelectionPolicy(
         base_full_text=1,
-        max_full_text=3,
-        max_token_budget=9_000,
-        estimated_tokens_per_full_text=4_000,
+        max_full_text=2,
         bonus_score_threshold=2.0,
     )
     articles = [
@@ -281,8 +279,6 @@ def test_collect_pubmed_articles_persists_metadata_and_full_text(session) -> Non
     selection_policy = FullTextSelectionPolicy(
         base_full_text=3,
         max_full_text=3,
-        max_token_budget=15_000,
-        estimated_tokens_per_full_text=4_000,
         bonus_score_threshold=1.0,
         prefer_pmc=False,
     )
@@ -421,8 +417,6 @@ def test_collect_pubmed_articles_fetches_abstracts_for_unselected_articles(sessi
     selection_policy = FullTextSelectionPolicy(
         base_full_text=1,
         max_full_text=1,
-        max_token_budget=4_500,
-        estimated_tokens_per_full_text=4_500,
         bonus_score_threshold=10.0,
     )
 

@@ -7,8 +7,6 @@ from typing import Mapping, Any
 DEFAULT_SEARCH_REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_BASE_FULL_TEXT_ARTICLES = 50
 DEFAULT_MAX_FULL_TEXT_ARTICLES = 100
-DEFAULT_FULL_TEXT_TOKEN_BUDGET = 240_000
-DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE = 4_500
 DEFAULT_PUBMED_RETMAX = 200
 
 
@@ -21,8 +19,6 @@ class SearchSettings:
 class ArticleSelectionSettings:
     base_full_text_articles: int = DEFAULT_BASE_FULL_TEXT_ARTICLES
     max_full_text_articles: int = DEFAULT_MAX_FULL_TEXT_ARTICLES
-    full_text_token_budget: int = DEFAULT_FULL_TEXT_TOKEN_BUDGET
-    estimated_tokens_per_article: int = DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE
     pubmed_retmax: int = DEFAULT_PUBMED_RETMAX
 
 
@@ -54,11 +50,6 @@ def load_settings(config: Mapping[str, Any] | None = None) -> AppSettings:
     refresh_ttl = _resolve("SEARCH_REFRESH_TTL_SECONDS", DEFAULT_SEARCH_REFRESH_TTL_SECONDS)
     base_full_text = _resolve("FULL_TEXT_BASE_ARTICLES", DEFAULT_BASE_FULL_TEXT_ARTICLES)
     max_full_text = _resolve("FULL_TEXT_MAX_ARTICLES", DEFAULT_MAX_FULL_TEXT_ARTICLES)
-    token_budget = _resolve("FULL_TEXT_TOKEN_BUDGET", DEFAULT_FULL_TEXT_TOKEN_BUDGET)
-    estimated_tokens = _resolve(
-        "FULL_TEXT_ESTIMATED_TOKENS",
-        DEFAULT_ESTIMATED_TOKENS_PER_ARTICLE,
-    )
     pubmed_retmax = _resolve("PUBMED_RETMAX", DEFAULT_PUBMED_RETMAX)
 
     return AppSettings(
@@ -66,8 +57,6 @@ def load_settings(config: Mapping[str, Any] | None = None) -> AppSettings:
         article_selection=ArticleSelectionSettings(
             base_full_text_articles=base_full_text,
             max_full_text_articles=max_full_text,
-            full_text_token_budget=token_budget,
-            estimated_tokens_per_article=estimated_tokens,
             pubmed_retmax=pubmed_retmax,
         ),
     )

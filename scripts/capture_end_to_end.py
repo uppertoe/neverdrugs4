@@ -230,8 +230,6 @@ def capture_end_to_end(
         selection_policy = FullTextSelectionPolicy(
             base_full_text=article_defaults.base_full_text_articles,
             max_full_text=resolved_full_text_cap,
-            max_token_budget=article_defaults.full_text_token_budget,
-            estimated_tokens_per_full_text=article_defaults.estimated_tokens_per_article,
         )
         full_text_fetcher = NIHFullTextFetcher()
 
