@@ -12,10 +12,10 @@ def make_celery() -> Celery:
     backend_url = os.environ.get("CELERY_RESULT_BACKEND", broker_url)
 
     celery_app = Celery(
-        "nih_module",
-        broker=broker_url,
-        backend=backend_url,
-        include=["app.tasks"],
+    "nih_module",
+    broker=broker_url,
+    backend=backend_url,
+    include=["app.celery_tasks"],
     )
 
     celery_app.conf.update(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from datetime import UTC, datetime
 from dataclasses import asdict, dataclass, field
 from typing import Iterable, Literal, Sequence
 
@@ -95,6 +97,29 @@ DEFAULT_WINDOW_CHARS = 600
 _MIN_SNIPPET_CHARS = 60
 
 
+def _parse_publication_year(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    match = re.search(r"(19|20|21)\d{2}", raw)
+    if match is None:
+        return None
+    year = int(match.group(0))
+    current_year = datetime.now(UTC).year + 1
+    if 1800 <= year <= current_year:
+        return year
+    return None
+
+
+def _normalize_study_types(values: Sequence[str] | None) -> tuple[str, ...]:
+    if not values:
+        return ()
+    cleaned = [value.strip() for value in values if value]
+    if not cleaned:
+        return ()
+    ordered = dict.fromkeys(cleaned)
+    return tuple(ordered.keys())
+
+
 @dataclass(slots=True)
 class SnippetCandidate:
     pmid: str
@@ -108,6 +133,9 @@ class SnippetCandidate:
     snippet_score: float
     cues: list[str]
     tags: list[Tag] = field(default_factory=list)
+    publication_year: int | None = None
+    study_types: tuple[str, ...] = field(default_factory=tuple)
+    cohort_size: int | None = None
 
 
 @dataclass(slots=True)
@@ -167,6 +195,9 @@ class ArticleSnippetExtractor:
         article_score: float,
         preferred_url: str,
         pmc_ref_count: int,
+        publication_date: str | None = None,
+        publication_types: Sequence[str] | None = None,
+        cohort_size: int | None = None,
     ) -> list[SnippetCandidate]:
         results = self.extract_snippet_results(
             article_text=article_text,
@@ -176,6 +207,9 @@ class ArticleSnippetExtractor:
             article_score=article_score,
             preferred_url=preferred_url,
             pmc_ref_count=pmc_ref_count,
+            publication_date=publication_date,
+            publication_types=publication_types,
+            cohort_size=cohort_size,
         )
         return [result.candidate for result in results]
 
@@ -189,6 +223,9 @@ class ArticleSnippetExtractor:
         article_score: float,
         preferred_url: str,
         pmc_ref_count: int,
+        publication_date: str | None = None,
+        publication_types: Sequence[str] | None = None,
+        cohort_size: int | None = None,
     ) -> list[SnippetResult]:
         if not article_text:
             return []
@@ -201,6 +238,9 @@ class ArticleSnippetExtractor:
 
         # Only enforce condition matching when the article actually references one of the aliases.
         require_condition = any(alias in lower_text for alias in condition_aliases)
+        publication_year = _parse_publication_year(publication_date)
+        normalized_study_types = _normalize_study_types(publication_types)
+        cohort_size_value = cohort_size if isinstance(cohort_size, int) and cohort_size > 0 else None
 
         windowed_candidates: list[WindowedCandidate] = []
 
@@ -249,6 +289,9 @@ class ArticleSnippetExtractor:
                         snippet_matches_condition or not require_condition or inferred_condition
                     ),
                     config=self.scoring_config,
+                    study_types=normalized_study_types,
+                    publication_year=publication_year,
+                    cohort_size=cohort_size_value,
                 )
 
                 metadata = {
@@ -257,6 +300,12 @@ class ArticleSnippetExtractor:
                     "require_condition": require_condition,
                     "drug_roles": drug_group.roles,
                 }
+                if publication_year is not None:
+                    metadata["publication_year"] = publication_year
+                if normalized_study_types:
+                    metadata["study_types"] = normalized_study_types
+                if cohort_size_value is not None:
+                    metadata["cohort_size"] = cohort_size_value
                 if severe_tags:
                     metadata["severe_reaction_flag"] = True
                     metadata["severe_reaction_terms"] = tuple(sorted({tag for tag in severe_tags}))
@@ -277,6 +326,9 @@ class ArticleSnippetExtractor:
                     snippet_score=snippet_score,
                     cues=list(cues),
                     tags=list(tags),
+                    publication_year=publication_year,
+                    study_types=normalized_study_types,
+                    cohort_size=cohort_size_value,
                 )
                 key = (drug, snippet_lower)
                 windowed_candidates.append(

@@ -3,11 +3,41 @@ from __future__ import annotations
 import json
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 from dotenv import load_dotenv
 
+from app.schemas import DRUG_FIRST_PAYLOAD_SCHEMA
+_DISALLOWED_RESPONSE_SCHEMA_KEYS = {"uniqueItems"}
+
+
+def _strip_disallowed_schema_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, subvalue in value.items():
+            if key in _DISALLOWED_RESPONSE_SCHEMA_KEYS:
+                continue
+            cleaned[key] = _strip_disallowed_schema_keys(subvalue)
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_disallowed_schema_keys(item) for item in value]
+    return value
+
+
+def _enforce_required_properties(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.get("type") == "object" and "properties" in value:
+            properties = value["properties"]
+            if isinstance(properties, dict) and properties:
+                value["required"] = sorted(properties.keys())
+        for key, subvalue in list(value.items()):
+            value[key] = _enforce_required_properties(subvalue)
+        return value
+    if isinstance(value, list):
+        return [_enforce_required_properties(item) for item in value]
+    return value
 from app.services.llm_batches import LLMRequestBatch
 
 load_dotenv()
@@ -71,91 +101,15 @@ class OpenAIChatClient:
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.request_timeout = request_timeout
         self.max_output_tokens = max_output_tokens if max_output_tokens is None else max(1, max_output_tokens)
+        sanitized_schema = _enforce_required_properties(
+            _strip_disallowed_schema_keys(deepcopy(DRUG_FIRST_PAYLOAD_SCHEMA))
+        )
+
         self.response_schema = response_schema or {
             "type": "json_schema",
-            "name": "llm_claims",
+            "name": "drug_first_payload",
             "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "condition": {"type": "string"},
-                    "claims": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "claim_id": {"type": "string"},
-                                "classification": {
-                                    "type": "string",
-                                    "enum": ["risk", "safety", "uncertain"],
-                                },
-                                "drug_classes": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                },
-                                "drugs": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                },
-                                "summary": {"type": "string"},
-                                "confidence": {
-                                    "type": "string",
-                                    "enum": ["low", "medium", "high"],
-                                },
-                                "severe_reaction": {
-                                    "type": "object",
-                                    "properties": {
-                                        "flag": {"type": "boolean"},
-                                        "terms": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "required": ["flag", "terms"],
-                                    "additionalProperties": False,
-                                },
-                                "supporting_evidence": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "snippet_id": {"type": "string"},
-                                            "pmid": {"type": "string"},
-                                            "article_title": {"type": "string"},
-                                            "key_points": {
-                                                "type": "array",
-                                                "items": {"type": "string"},
-                                            },
-                                            "notes": {"type": "string"},
-                                        },
-                                        "required": [
-                                            "snippet_id",
-                                            "pmid",
-                                            "article_title",
-                                            "key_points",
-                                            "notes",
-                                        ],
-                                        "additionalProperties": False,
-                                    },
-                                },
-                            },
-                            "required": [
-                                "claim_id",
-                                "classification",
-                                "drug_classes",
-                                "drugs",
-                                "summary",
-                                "confidence",
-                                "severe_reaction",
-                                "supporting_evidence",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                "required": ["condition", "claims"],
-                "additionalProperties": False,
-            },
+            "schema": sanitized_schema,
         }
 
         if client is not None:

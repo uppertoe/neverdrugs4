@@ -64,19 +64,6 @@ def _serialise_batch(batch: LLMRequestBatch) -> dict[str, object]:
             }
             for entry in batch.snippets
         ],
-        "claim_groups": [
-            {
-                "group_key": group.group_key,
-                "classification": group.classification,
-                "drug_label": group.drug_label,
-                "drug_terms": list(group.drug_terms),
-                "drug_classes": list(group.drug_classes),
-                "snippet_ids": list(group.snippet_ids),
-                "pmids": list(group.pmids),
-                "top_score": group.top_score,
-            }
-            for group in batch.claim_groups
-        ],
     }
 
 

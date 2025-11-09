@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<eSummaryResult>
+    <DocSum>
+        <Id>123456</Id>
+        <Item Name="DS_MeshTerms" Type="List">
+            <Item Name="string" Type="String">Epilepsies, Myoclonic</Item>
+            <Item Name="string" Type="String">Epilepsy, Myoclonic</Item>
+            <Item Name="string" Type="String">Myoclonic Epilepsy, Infantile, Severe</Item>
+            <Item Name="string" Type="String">Infantile Severe Myoclonic Epilepsy</Item>
+            <Item Name="string" Type="String">Dravet Syndrome</Item>
+            <Item Name="string" Type="String">Dravet Syndromes</Item>
+        </Item>
+    </DocSum>
+</eSummaryResult>

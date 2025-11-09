@@ -70,18 +70,17 @@ def test_refresh_claims_invokes_pubmed_collection(
     openai_client_cls_mock.return_value = client_instance
     persist_claims_mock.return_value = SimpleNamespace(claims=[SimpleNamespace()])
 
-    result = refresh_claims_for_condition.apply(
-        task_id="test-task-id",
-        kwargs={
-            "resolution_id": 1,
-            "condition_label": "Central Core Disease",
-            "normalized_condition": "central core disease",
-            "mesh_terms": ["Central Core Disease"],
-            "mesh_signature": "central-core",
-        },
+    result = refresh_claims_for_condition(
+        resolution_id=1,
+        condition_label="Central Core Disease",
+        normalized_condition="central core disease",
+        mesh_terms=["Central Core Disease"],
+        mesh_signature="central-core",
+        job_id="test-task-id",
+        session_factory=session_factory,
     )
 
-    assert result.result == "completed"
+    assert result == "completed"
     collect_articles_mock.assert_called_once()
     build_batches_mock.assert_called_once()
     assert collect_articles_mock.call_args[0][0] is fresh_resolution
@@ -115,18 +114,17 @@ def test_refresh_claims_returns_no_batches_after_collection(
     )
     resolve_condition_mock.return_value = fresh_resolution
 
-    result = refresh_claims_for_condition.apply(
-        task_id="test-task-id",
-        kwargs={
-            "resolution_id": 2,
-            "condition_label": "Central Core Disease",
-            "normalized_condition": "central core disease",
-            "mesh_terms": ["Central Core Disease"],
-            "mesh_signature": "central-core",
-        },
+    result = refresh_claims_for_condition(
+        resolution_id=2,
+        condition_label="Central Core Disease",
+        normalized_condition="central core disease",
+        mesh_terms=["Central Core Disease"],
+        mesh_signature="central-core",
+        job_id="test-task-id",
+        session_factory=session_factory,
     )
 
-    assert result.result == "no-batches"
+    assert result == "no-batches"
     collect_articles_mock.assert_called_once()
     build_batches_mock.assert_called_once()
     openai_client_cls_mock.assert_not_called()
@@ -165,18 +163,17 @@ def test_refresh_claims_records_empty_results(
     openai_client_cls_mock.return_value = client_instance
     persist_claims_mock.return_value = SimpleNamespace(claims=[])
 
-    result = refresh_claims_for_condition.apply(
-        task_id="test-task-id",
-        kwargs={
-            "resolution_id": 4,
-            "condition_label": "Central Core Disease",
-            "normalized_condition": "central core disease",
-            "mesh_terms": ["Central Core Disease"],
-            "mesh_signature": "central-core",
-        },
+    result = refresh_claims_for_condition(
+        resolution_id=4,
+        condition_label="Central Core Disease",
+        normalized_condition="central core disease",
+        mesh_terms=["Central Core Disease"],
+        mesh_signature="central-core",
+        job_id="test-task-id",
+        session_factory=session_factory,
     )
 
-    assert result.result == "empty-results"
+    assert result == "empty-results"
 
     session = session_factory()
     try:
@@ -207,18 +204,17 @@ def test_refresh_claims_skips_when_mesh_terms_missing(
         normalized_condition="unknown", search_term_id=303, suggestions=["foo", "bar"]
     )
 
-    result = refresh_claims_for_condition.apply(
-        task_id="test-task-id",
-        kwargs={
-            "resolution_id": 3,
-            "condition_label": "Unknown",
-            "normalized_condition": "unknown",
-            "mesh_terms": ["Unknown"],
-            "mesh_signature": "unknown",
-        },
+    result = refresh_claims_for_condition(
+        resolution_id=3,
+        condition_label="Unknown",
+        normalized_condition="unknown",
+        mesh_terms=["Unknown"],
+        mesh_signature="unknown",
+        job_id="test-task-id",
+        session_factory=session_factory,
     )
 
-    assert result.result == "skipped"
+    assert result == "skipped"
     collect_articles_mock.assert_not_called()
 
     session = session_factory()

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Iterable, Mapping, Sequence
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -12,14 +12,15 @@ except ImportError:  # pragma: no cover - optional dependency for token counting
     tiktoken = None
 
 from app.models import ArticleArtefact
-from app.services.claims import ClaimEvidenceGroup, group_snippets_for_claims
+from app.services.claims import group_snippets_for_claims
+from app.services.drug_classes import resolve_drug_group
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are a clinical evidence synthesis assistant. Analyse the supplied snippets and claim groups before classifying each drug. "
-    "When classifying a claim, begin with a concise checklist (3-7 bullet points) outlining the tasks you will perform. "
-    "Focus on causality and therapeutic intent, cite only the provided snippet_ids, and keep reasoning grounded in the text. "
-    "After each classification, briefly validate the decision in 1-2 lines against the cited snippets and proceed or self-correct if the validation fails, but do not include this checklist in the JSON schema output. "
-    "Do not infer any new facts beyond those explicitly presented."
+    "You are a clinical evidence synthesis assistant. Analyse the supplied snippets and claim groups before constructing cross-drug findings. "
+    "When assessing each claim, draft a concise internal checklist (3-7 bullet points) covering the verification steps you will perform, then silently execute it. "
+    "Focus on causality and therapeutic intent, cite only the provided article_ids, and keep reasoning grounded in the text. "
+    "After each classification, briefly validate your decision against the cited evidence; self-correct if the validation fails, but do not include the checklist or validation in the JSON output. "
+    "Identify idiosyncratic reactions explicitly when the evidence supports them, and do not infer facts beyond those presented."
 )
 _SNIPPET_METADATA_TOKENS = 18
 _SNIPPET_TOKEN_MULTIPLIER = 1.15
@@ -29,34 +30,13 @@ _DEFAULT_TOKENS_MODEL = "gpt-5-mini"
 
 _SAMPLE_RESPONSE_JSON = (
     "{\n"
-    "  \"condition\": \"King Denborough syndrome\",\n"
-    "  \"claims\": [\n"
-    "    {\n"
-    "      \"claim_id\": \"risk:succinylcholine\",\n"
-    "      \"classification\": \"risk\",\n"
-    "      \"drug_classes\": [\"depolarising neuromuscular blocker\"],\n"
-    "      \"drugs\": [\"succinylcholine\"],\n"
-    "      \"summary\": \"Succinylcholine repeatedly precipitated malignant hyperthermia in the cited reports.\",\n"
-    "      \"confidence\": \"high\",\n"
-    "      \"severe_reaction\": {\n"
-    "        \"flag\": true,\n"
-    "        \"terms\": [\"anaphylaxis\"]\n"
-    "      },\n"
-    "      \"supporting_evidence\": [\n"
-    "        {\n"
-    "          \"snippet_id\": \"4\",\n"
-    "          \"pmid\": \"33190635\",\n"
-    "          \"article_title\": \"Ryanodine receptor 1-related disorders: an historical perspective and proposal for a unified nomenclature.\",\n"
-    "          \"key_points\": [\n"
-    "            \"Review links volatile anesthetics and depolarising muscle relaxants (succinylcholine) with malignant hyperthermia episodes.\",\n"
-    "            \"Describes malignant hyperthermia features that occurred following succinylcholine exposure.\"\n"
-    "          ],\n"
-    "          \"notes\": \"Classified as risk because succinylcholine is named as the precipitating agent.\"\n"
-    "        }\n"
-    "      ]\n"
-    "    }\n"
-    "  ]\n"
-    "}"
+    "  \"condition\": \"Central core disease\",\n"
+    "  \"drugs\": [\n"
+    "    {\"id\": \"drug:succinylcholine\", \"name\": \"Succinylcholine\", \"classifications\": [\"neuromuscular blocker\"], \"atc_codes\": [\"M03AB01\"], \"claims\": [\"claim:malignant-hyperthermia\"]},\n"
+    "    {\"id\": \"drug:volatile-anaesthetics\", \"name\": \"Volatile anaesthetics\", \"classifications\": [\"inhalational anesthetic\"], \"atc_codes\": [\"N01AB\"], \"claims\": [\"claim:malignant-hyperthermia\"]}\n"
+    "  ],\n"
+    "  \"claims\": [{\"id\": \"claim:malignant-hyperthermia\", \"type\": \"risk\", \"summary\": \"Malignant hyperthermia recurred after depolarising neuromuscular blockers in susceptible patients.\", \"confidence\": \"high\", \"idiosyncratic_reaction\": {\"flag\": true, \"descriptors\": [\"malignant hyperthermia\"]}, \"articles\": [\"article:33190635\"], \"drugs\": [\"drug:succinylcholine\", \"drug:volatile-anaesthetics\"], \"supporting_evidence\": [{\"snippet_id\": \"snippet:33190635-1\", \"pmid\": \"33190635\", \"article_title\": \"Ryanodine receptor 1-related disorders: an historical perspective and proposal for a unified nomenclature.\", \"key_points\": [\"Volatile anesthetics and depolarising neuromuscular blockers triggered malignant hyperthermia events in susceptible patients.\"], \"notes\": \"\"}]}]\n"
+    "}\n"
 )
 
 
@@ -84,7 +64,6 @@ class LLMRequestBatch:
     messages: list[dict[str, str]]
     snippets: list[SnippetLLMEntry]
     token_estimate: int
-    claim_groups: list[ClaimEvidenceGroup[SnippetLLMEntry]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -92,7 +71,6 @@ class _PreparedBatch:
     snippets: list[SnippetLLMEntry]
     messages: list[dict[str, str]]
     token_count: int
-    claim_groups: list[ClaimEvidenceGroup[SnippetLLMEntry]]
 
 
 def build_llm_batches(
@@ -263,41 +241,69 @@ def _collect_snippet_entries(session: Session, *, search_term_id: int) -> list[S
     entries.sort(key=lambda e: (-e.snippet_score, e.article_rank, e.drug.lower()))
     return entries
 
+def _is_generic_term(term: str | None) -> bool:
+    if not term:
+        return True
+    group = resolve_drug_group(term)
+    if "generic-class" in getattr(group, "roles", ()):  # type: ignore[attr-defined]
+        return True
+    return False
+
+
+def _normalise_specific_drug(term: str | None) -> str | None:
+    if not term:
+        return None
+    cleaned = term.strip()
+    if not cleaned:
+        return None
+    if _is_generic_term(cleaned):
+        return None
+    return cleaned
+
+
+def _derive_prompt_context(
+    snippets: Sequence[SnippetLLMEntry],
+) -> tuple[dict[int, set[str]], list[str]]:
+    related_drugs: dict[int, set[str]] = {}
+    ordered_specific: list[str] = []
+    seen_specific: set[str] = set()
+
+    groups = group_snippets_for_claims(snippets)
+    if not groups:
+        return related_drugs, ordered_specific
+
+    for group in groups:
+        specific_terms: list[str] = []
+        for term in group.drug_terms:
+            specific = _normalise_specific_drug(term)
+            if not specific:
+                continue
+            specific_terms.append(specific)
+            lower = specific.lower()
+            if lower not in seen_specific:
+                ordered_specific.append(specific)
+                seen_specific.add(lower)
+        if not specific_terms:
+            continue
+        for snippet in group.snippets:
+            related_drugs.setdefault(id(snippet), set()).update(specific_terms)
+
+    return related_drugs, ordered_specific
+
+
 def _render_user_prompt(
     *,
     condition_label: str,
     mesh_terms: Sequence[str] | None,
     snippets: list[SnippetLLMEntry],
-    claim_groups: Sequence[ClaimEvidenceGroup[SnippetLLMEntry]],
+    related_drug_map: Mapping[int, set[str]],
+    drugs_in_scope: Sequence[str],
 ) -> str:
     mesh_line = ", ".join(mesh_terms) if mesh_terms else "None provided"
     schema_block = (
-        "{\n"
-        '  "condition": "string",\n'
-        '  "claims": [\n'
-        "    {\n"
-        '      "claim_id": "string",\n'
-        '      "classification": "risk | safety | uncertain",\n'
-        '      "drug_classes": ["string"],\n'
-        '      "drugs": ["string"],\n'
-        '      "summary": "string",\n'
-        '      "confidence": "low | medium | high",\n'
-    '      "severe_reaction": {\n'
-    '        "flag": true | false,\n'
-    '        "terms": ["string"]\n'
-    "      },\n"
-        '      "supporting_evidence": [\n'
-        "        {\n"
-        '          "snippet_id": "string",\n'
-        '          "pmid": "string",\n'
-        '          "article_title": "string",\n'
-        '          "key_points": ["string"],\n'
-        '          "notes": "string"\n'
-        "        }\n"
-        "      ]\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
+        '"condition": string\n'
+        '"drugs": [{"id": "drug:identifier", "name": string, "classifications": [string], "atc_codes": [string], "claims": ["claim:identifier"]}]\n'
+        '"claims": [{"id": "claim:identifier", "type": "risk | safety | uncertain | nuanced", "summary": string, "confidence": "low | medium | high", "idiosyncratic_reaction": {"flag": true | false, "descriptors": [string]}, "articles": ["article:identifier"], "drugs": ["drug:identifier"], "supporting_evidence": [{"snippet_id": string, "pmid": string, "article_title": string, "key_points": [string], "notes": string}]}]\n'
     )
 
     snippet_identifiers: dict[int, str] = {}
@@ -305,119 +311,76 @@ def _render_user_prompt(
     for idx, snippet in enumerate(snippets, start=1):
         cues_line = ", ".join(snippet.cues) if snippet.cues else "none"
         title = snippet.article_title or "(no title provided)"
-        severe_label = "yes" if snippet.severe_reaction_flag else "no"
-        severe_terms = ", ".join(snippet.severe_reaction_terms) if snippet.severe_reaction_terms else "none"
         snippet_identifier = (
             str(snippet.snippet_id) if snippet.snippet_id is not None else f"{snippet.pmid}-s{idx}"
         )
         snippet_identifiers[id(snippet)] = snippet_identifier
+        article_id = f"article:{snippet.pmid}"
+        related_terms = set(related_drug_map.get(id(snippet), set()))
+        primary_term = _normalise_specific_drug(snippet.drug)
+        if primary_term:
+            related_terms.add(primary_term)
+        related_line = ", ".join(sorted(t for t in related_terms if t)) or "none"
         snippet_blocks.append(
             (
                 f"{idx}. snippet_id: {snippet_identifier}\n"
-                f"   article_pmid: {snippet.pmid}\n"
+                f"   article_id: {article_id}\n"
                 f"   article_title: {title}\n"
-                f"   drug: {snippet.drug}\n"
                 f"   classification: {snippet.classification}\n"
-                f"   score: {snippet.snippet_score:.2f}\n"
-                f"   article_rank: {snippet.article_rank}\n"
-                f"   source_url: {snippet.citation_url}\n"
                 f"   cues: {cues_line}\n"
-                f"   severe_reaction: {severe_label} (terms: {severe_terms})\n"
+                f"   related_drugs: {related_line}\n"
                 f"   snippet: {snippet.snippet_text.replace('\n', ' ').strip()}"
             )
         )
 
     snippet_section = "\n".join(snippet_blocks)
 
-    claim_blocks: list[str] = []
-    generic_groups: list[ClaimEvidenceGroup[SnippetLLMEntry]] = []
-    for idx, group in enumerate(claim_groups, start=1):
-        class_line = ", ".join(group.drug_classes) if group.drug_classes else "none"
-        drugs_line = ", ".join(group.drug_terms)
-        if "generic-class" in group.drug_classes:
-            generic_groups.append(group)
-
-        snippet_ids = []
-        for inner_idx, snippet in enumerate(group.snippets, start=1):
-            identifier = snippet_identifiers.get(id(snippet))
-            if identifier is None:
-                identifier = (
-                    str(snippet.snippet_id)
-                    if snippet.snippet_id is not None
-                    else f"{snippet.pmid}-g{idx}-s{inner_idx}"
-                )
-            snippet_ids.append(identifier)
-
-        supporting_line = ", ".join(snippet_ids) if snippet_ids else "none"
-        group_block = (
-            f"{idx}. claim_group_id: {group.group_key}\n"
-            f"   classification: {group.classification}\n"
-            f"   drug_label: {group.drug_label}\n"
-            f"   drug_classes: {class_line}\n"
-            f"   drugs: {drugs_line}\n"
-            f"   top_snippet_score: {group.top_score:.2f}\n"
-            f"   supporting_snippet_ids: {supporting_line}"
-        )
-        claim_blocks.append(group_block)
-
-    claim_section = "\n".join(claim_blocks)
-
-    caution_section = ""
-    if generic_groups:
-        caution_labels: list[str] = []
-        for group in generic_groups:
-            if group.drug_terms:
-                term_list = ", ".join(group.drug_terms)
-                caution_labels.append(f"{group.drug_label} ({term_list})")
-            else:
-                caution_labels.append(group.drug_label)
-        joined_labels = "; ".join(caution_labels)
-        caution_section = (
-            "CAUTION\n"
-            f"The following claim groups are overly broad drug categories; prioritise specific named drugs when evidence supports them: {joined_labels}.\n\n"
-        )
-
     instruction_block = (
         "INSTRUCTIONS\n"
-        "1. Classify each drug (risk, safety, uncertain) using causality from the snippets only.\n"
-        "2. Merge supporting snippets per claim and cite every snippet_id you rely on.\n"
-        "3. If evidence conflicts, create separate claims and explain the disagreement in the summary or notes.\n"
-        "4. Keep key_points concise (1–2 sentences) and grounded in the cited text; do not invent new facts.\n"
-        "5. Use severe_reaction.flag when the snippet describes an unexpected, clinically serious reaction (e.g., anaphylaxis, cardiac arrest, refractory seizures). Populate severe_reaction.terms with the exact descriptors from the snippets; leave it empty only when flag is false.\n"
-        "6. Output valid JSON conforming to the schema.\n\n"
+        "1. Review DRUGS IN SCOPE and emit a drug entry for each listed drug; copy the name exactly, keep the provided class labels, include our ATC codes (or add only when the text clearly justifies it), and list the claim_ids you produce for that drug (leave the list empty when evidence is insufficient).\n"
+        "2. Build shared findings (risk | safety | uncertain | nuanced) using only the supplied evidence, keep summaries factual, cite every supporting article_id, and attach all relevant drug_ids—even when a snippet mentions several drugs.\n"
+        "3. Do not fabricate claims for drugs with insufficient evidence; it is acceptable for a drug to have zero claims.\n"
+        "4. Use the article_id identifiers we provide—cite an article once even if multiple snippets support it, never invent IDs, and flag unresolved citations in the claim summary if an article_id is missing.\n"
+        "5. Detect idiosyncratic reactions yourself; when evidence shows unexpected patient-specific reactions (e.g., malignant hyperthermia), set idiosyncratic_reaction.flag true and copy the descriptors, otherwise leave the flag false with an empty list.\n"
+        "6. Populate the supporting_evidence list for each claim using snippet_id values from the listing (include pmid, article_title, key_points, and optional notes; leave the array empty when evidence is too weak).\n"
+        "7. Return JSON that matches the schema exactly; omit commentary.\n\n"
     )
 
     context_block = (
         "CONTEXT\n"
-        f"Condition: {condition_label}\n"
-        f"Related terms: {mesh_line}\n"
-        "Snippets are ranked by snippet_score (higher is stronger) and article_rank (lower is better).\n"
-        "Each claim_group bundles snippets for the same drug or drug class.\n\n"
+        f"Condition: {condition_label} | Related terms: {mesh_line}\n"
+        "Snippets sorted by snippet_score (desc) then article_rank (asc); use the overlapping drug mentions to connect evidence across claims.\n\n"
     )
 
     legend_block = (
         "REFERENCE\n"
-        "- snippet_id: stable identifier for citation.\n"
-        "- article_rank: lower values indicate higher priority articles.\n"
-        "- cues: keywords that triggered initial classification; verify them before relying on them.\n"
-        "- severe_reaction: yes indicates the snippet already signals a severe reaction and lists the descriptors detected.\n\n"
+        "- snippet_id: prompt-only reference (omit from JSON).\n"
+        "- article_id: prefix 'article:' + pmid; use for citations and flag if missing.\n"
+        "- related_drugs: union of all drugs tied to the snippet; ensure each appears in the output (even if labelled insufficient evidence).\n"
+        "- cues/heuristics: NLP hints; verify before relying on them.\n\n"
     )
+
+    drugs_in_scope_block = "DRUGS IN SCOPE\n"
+    if drugs_in_scope:
+        for idx, drug in enumerate(drugs_in_scope, start=1):
+            drugs_in_scope_block += f"{idx}. {drug}\n"
+    else:
+        drugs_in_scope_block += "None identified\n"
+    drugs_in_scope_block += "\n"
 
     return (
         context_block
         + legend_block
+        + drugs_in_scope_block
         + instruction_block
         + "SCHEMA\n"
         + schema_block
         + "SAMPLE RESPONSE\n"
         + _SAMPLE_RESPONSE_JSON
         + "\n\n"
-        + caution_section
         + "Snippets (full listing):\n"
         + snippet_section
-        + "\n\nClaim groups (use these to organise the response):\n"
-        + claim_section
-        + "\nReturn only JSON."
+        + "\n\nReturn only JSON."
     )
 
 
@@ -433,24 +396,54 @@ def _prioritise_snippet_entries(snippets: list[SnippetLLMEntry]) -> list[Snippet
 
     groups = group_snippets_for_claims(snippets)
     if not groups:
-        return snippets
+        return _prioritise_unique_drug_coverage(snippets)
 
     specific_groups = [group for group in groups if "generic-class" not in group.drug_classes]
     if not specific_groups:
-        return snippets
-
+        return _prioritise_unique_drug_coverage(snippets)
     allowed = {id(snippet) for group in specific_groups for snippet in group.snippets}
     filtered: list[SnippetLLMEntry] = []
     for snippet in snippets:
-        classification = getattr(snippet, "classification", "").strip().lower()
+        classification = (getattr(snippet, "classification", "") or "").strip().lower()
         if id(snippet) in allowed or classification not in {"risk", "safety"}:
             filtered.append(snippet)
-    return filtered
+    return _prioritise_unique_drug_coverage(filtered)
+
+
+def _prioritise_unique_drug_coverage(snippets: list[SnippetLLMEntry]) -> list[SnippetLLMEntry]:
+    if not snippets:
+        return []
+
+    seen: set[str] = set()
+    unique_first: list[SnippetLLMEntry] = []
+    remainder: list[SnippetLLMEntry] = []
+
+    for snippet in snippets:
+        key: str | None = None
+        primary = _normalise_specific_drug(getattr(snippet, "drug", None))
+        if primary:
+            key = primary.lower()
+        else:
+            raw = (getattr(snippet, "drug", "") or "").strip().lower()
+            key = raw or None
+
+        if key is None:
+            remainder.append(snippet)
+            continue
+
+        if key in seen:
+            remainder.append(snippet)
+            continue
+
+        seen.add(key)
+        unique_first.append(snippet)
+
+    unique_first.extend(remainder)
+    return unique_first
 
 
 def _count_message_tokens(
     messages: Sequence[dict[str, str]],
-    *,
     model: str = _DEFAULT_TOKENS_MODEL,
 ) -> int:
     if not messages:
@@ -488,12 +481,13 @@ def _prepare_batch(
     if not snippet_list:
         return None
 
-    groups = group_snippets_for_claims(snippet_list)
+    related_map, drugs_in_scope = _derive_prompt_context(snippet_list)
     user_prompt = _render_user_prompt(
         condition_label=condition_label,
         mesh_terms=mesh_terms,
         snippets=snippet_list,
-        claim_groups=groups,
+        related_drug_map=related_map,
+        drugs_in_scope=drugs_in_scope,
     )
     messages = [
         {"role": "system", "content": system_prompt},
@@ -504,7 +498,6 @@ def _prepare_batch(
         snippets=snippet_list,
         messages=messages,
         token_count=token_count,
-        claim_groups=groups,
     )
 
 
@@ -513,7 +506,6 @@ def _finalise_batch(prepared: _PreparedBatch) -> LLMRequestBatch:
         messages=prepared.messages,
         snippets=list(prepared.snippets),
         token_estimate=prepared.token_count,
-        claim_groups=list(prepared.claim_groups),
     )
 
 

@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Ensure the repository root is importable when the script is executed directly.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
 
 from app.database import Base
 from app.models import ArticleArtefact, ArticleSnippet, SearchTerm

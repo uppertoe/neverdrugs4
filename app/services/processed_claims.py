@@ -16,6 +16,11 @@ from app.models import (
 )
 
 _CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
+_CLAIM_TYPES = {"risk", "safety", "uncertain", "nuanced"}
+
+
+class InvalidClaimPayload(ValueError):
+    """Raised when the LLM payload violates the enforced claim schema."""
 
 
 @dataclass(slots=True)
@@ -39,6 +44,13 @@ class _AggregatedClaim:
     evidence: "OrderedDict[str, _AggregatedEvidence]" = field(default_factory=OrderedDict)
     severe_reaction_flag: bool = False
     severe_reaction_terms: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _DrugCatalogEntry:
+    drug_id: str
+    name: str
+    classes: tuple[str, ...]
 
 
 def persist_processed_claims(
@@ -145,21 +157,75 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
         data = _coerce_payload(payload)
         if not data:
             continue
+        drug_catalog, claim_to_drugs = _build_drug_catalog(data.get("drugs"))
+        declared_claim_ids = set(claim_to_drugs.keys())
         claims = data.get("claims") or []
         for claim in claims:
-            classification = (claim.get("classification") or "").strip().lower()
-            if not classification:
-                continue
-            drugs, drug_classes = _normalise_claim_terms(
+            if not isinstance(claim, dict):
+                raise InvalidClaimPayload("LLM claim payload contains a non-object claim entry")
+
+            claim_id_raw = _clean_str(claim.get("id"))
+            if not claim_id_raw:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'id'")
+            claim_id = claim_id_raw
+
+            classification_raw = _clean_str(claim.get("type"))
+            if not classification_raw:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'type'")
+            classification = classification_raw.lower()
+            if classification not in _CLAIM_TYPES:
+                raise InvalidClaimPayload(
+                    f"LLM claim payload has invalid type '{classification_raw}'"
+                )
+
+            summary = _clean_str(claim.get("summary"))
+            if not summary:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'summary'")
+
+            confidence_raw = _clean_str(claim.get("confidence"))
+            if not confidence_raw:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'confidence'")
+            confidence = confidence_raw.lower()
+            if confidence not in _CONFIDENCE_ORDER:
+                raise InvalidClaimPayload(
+                    f"LLM claim payload has invalid confidence '{confidence_raw}'"
+                )
+
+            if "drugs" not in claim or claim.get("drugs") is None:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'drugs'")
+            drugs, drug_classes, canonical_drug_ids = _normalise_claim_terms(
                 claim.get("drugs"),
                 claim.get("drug_classes"),
+                drug_catalog=drug_catalog,
             )
+            if not drugs:
+                raise InvalidClaimPayload("LLM claim payload did not resolve any drug terms")
+
+            if claim_id not in claim_to_drugs:
+                raise InvalidClaimPayload(
+                    f"Claim '{claim_id}' is not declared in the top-level drugs claims list"
+                )
+
+            declared_drugs = claim_to_drugs[claim_id]
+            for canonical_id in canonical_drug_ids:
+                if canonical_id not in declared_drugs:
+                    raise InvalidClaimPayload(
+                        f"Claim '{claim_id}' references drug '{canonical_id}' without declaration"
+                    )
+
+            declared_claim_ids.discard(claim_id)
             key = _build_claim_key(classification, drugs, drug_classes)
 
-            confidence = (claim.get("confidence") or "low").strip().lower()
-            summary = claim.get("summary") or ""
-            claim_id = claim.get("claim_id") or key
-            severe_flag, severe_terms = _parse_severe_reaction(claim.get("severe_reaction"))
+            reaction_payload = claim.get("idiosyncratic_reaction")
+            if reaction_payload is None:
+                raise InvalidClaimPayload(
+                    "LLM claim payload missing required field 'idiosyncratic_reaction'"
+                )
+            if not isinstance(reaction_payload, dict):
+                raise InvalidClaimPayload(
+                    "LLM claim payload 'idiosyncratic_reaction' must be an object"
+                )
+            severe_flag, severe_terms = _parse_severe_reaction(reaction_payload)
 
             aggregated_claim = aggregated.get(key)
             if aggregated_claim is None:
@@ -181,40 +247,111 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                 aggregated_claim.source_claim_ids.append(claim_id)
 
             for evidence in claim.get("supporting_evidence") or []:
-                snippet_id_raw = evidence.get("snippet_id")
-                if snippet_id_raw is None:
-                    continue
-                snippet_id = str(snippet_id_raw)
+                if not isinstance(evidence, dict):
+                    raise InvalidClaimPayload("LLM claim payload supporting_evidence must be objects")
+
+                snippet_id_raw = _clean_str(evidence.get("snippet_id"))
+                if not snippet_id_raw:
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence missing 'snippet_id'"
+                    )
+                snippet_id = snippet_id_raw
+
+                pmid = _clean_str(evidence.get("pmid"))
+                if not pmid:
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence missing 'pmid'"
+                    )
+
+                article_title = _clean_str(evidence.get("article_title"))
+                if not article_title:
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence missing 'article_title'"
+                    )
+
+                raw_key_points = evidence.get("key_points")
+                if isinstance(raw_key_points, (str, bytes)):
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence.key_points must be an array of strings"
+                    )
+                try:
+                    key_points_iter = iter(raw_key_points or [])
+                except TypeError as exc:
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence.key_points must be an array of strings"
+                    ) from exc
+
+                key_points = [point for point in key_points_iter if isinstance(point, str) and point]
+                if not key_points:
+                    raise InvalidClaimPayload(
+                        "LLM claim payload supporting_evidence.key_points must contain at least one entry"
+                    )
+
                 if snippet_id not in aggregated_claim.evidence:
                     aggregated_claim.evidence[snippet_id] = _AggregatedEvidence(
                         snippet_id=snippet_id,
-                        pmid=_clean_str(evidence.get("pmid")),
-                        article_title=_clean_str(evidence.get("article_title")),
-                        key_points=[point for point in (evidence.get("key_points") or []) if point],
+                        pmid=pmid,
+                        article_title=article_title,
+                        key_points=key_points,
                         notes=_clean_str(evidence.get("notes")),
                     )
+
+            if "articles" not in claim or claim.get("articles") is None:
+                raise InvalidClaimPayload("LLM claim payload missing required field 'articles'")
+            linked_articles = _normalise_article_ids(claim.get("articles"))
+            if not linked_articles:
+                raise InvalidClaimPayload(
+                    "LLM claim payload did not include any linked articles"
+                )
+            for article_id, pmid in linked_articles:
+                if article_id not in aggregated_claim.evidence:
+                    aggregated_claim.evidence[article_id] = _AggregatedEvidence(
+                        snippet_id=article_id,
+                        pmid=pmid,
+                        article_title=None,
+                        key_points=[],
+                        notes=None,
+                    )
+
+        if declared_claim_ids:
+            missing = sorted(declared_claim_ids)
+            raise InvalidClaimPayload(
+                "Drug metadata declares claims without payload entries: " + ", ".join(missing)
+            )
 
     return _reduce_redundant_claims(aggregated)
 
 
-def _parse_severe_reaction(value: object) -> tuple[bool, list[str]]:
-    if value is None:
-        return False, []
-    if isinstance(value, bool):
-        return bool(value), []
-    if not isinstance(value, dict):
-        return False, []
+def _parse_severe_reaction(value: dict) -> tuple[bool, list[str]]:
+    if "flag" not in value:
+        raise InvalidClaimPayload("LLM claim payload idiosyncratic_reaction missing 'flag'")
+    flag_value = value["flag"]
+    if not isinstance(flag_value, bool):
+        raise InvalidClaimPayload("LLM claim payload idiosyncratic_reaction.flag must be boolean")
 
-    raw_flag = value.get("flag")
-    terms_source = value.get("terms") or []
+    if "descriptors" not in value:
+        raise InvalidClaimPayload(
+            "LLM claim payload idiosyncratic_reaction.descriptors missing"
+        )
+    descriptors = value["descriptors"]
+    if isinstance(descriptors, (str, bytes)):
+        raise InvalidClaimPayload(
+            "LLM claim payload idiosyncratic_reaction.descriptors must be an array of strings"
+        )
+    try:
+        iterator = iter(descriptors)
+    except TypeError as exc:  # noqa: PERF203 - defensive validation
+        raise InvalidClaimPayload(
+            "LLM claim payload idiosyncratic_reaction.descriptors must be an array of strings"
+        ) from exc
+
     cleaned_terms: list[str] = []
-    for term in terms_source:
+    for term in iterator:
         cleaned = _clean_str(term)
         if cleaned:
             cleaned_terms.append(cleaned)
     unique_terms = list(dict.fromkeys(cleaned_terms))
-    flag = bool(raw_flag) or bool(unique_terms)
-    return flag, unique_terms
+    return flag_value, unique_terms
 
 
 def _merge_severe_reaction(
@@ -237,17 +374,19 @@ def _merge_severe_reaction(
 
 def _coerce_payload(payload: object) -> dict:
     if payload is None:
-        return {}
+        raise InvalidClaimPayload("LLM payload must be a JSON object")
     if isinstance(payload, dict):
         return payload
     parsed = getattr(payload, "parsed_json", None)
     if callable(parsed):
         try:
             result = parsed()
-        except Exception:  # noqa: BLE001 - defensive: wrapping external client objects
-            return {}
-        return result if isinstance(result, dict) else {}
-    return {}
+        except Exception as exc:  # noqa: BLE001 - wrap external client exceptions
+            raise InvalidClaimPayload("LLM payload parsed_json() failed") from exc
+        if isinstance(result, dict):
+            return result
+        raise InvalidClaimPayload("LLM payload parsed_json() must return a JSON object")
+    raise InvalidClaimPayload("LLM payload must be a JSON object")
 
 
 def _unique_terms(terms: Iterable[str]) -> list[str]:
@@ -315,27 +454,156 @@ def _clean_str(value: object) -> str | None:
 def _normalise_claim_terms(
     drugs: Iterable[str] | None,
     drug_classes: Iterable[str] | None,
-) -> tuple[list[str], list[str]]:
-    raw_drugs = drugs or []
-    raw_classes = drug_classes or []
+    *,
+    drug_catalog: dict[str, _DrugCatalogEntry] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    if isinstance(drugs, (str, bytes)):
+        raise InvalidClaimPayload("LLM claim payload claim.drugs must be an array of canonical ids")
+    try:
+        raw_drugs = list(drugs or [])
+    except TypeError as exc:
+        raise InvalidClaimPayload(
+            "LLM claim payload claim.drugs must be an array of canonical ids"
+        ) from exc
+
+    if isinstance(drug_classes, (str, bytes)):
+        raise InvalidClaimPayload(
+            "LLM claim payload claim.drug_classes must be an array of strings"
+        )
+    try:
+        raw_classes = list(drug_classes or [])
+    except TypeError as exc:
+        raise InvalidClaimPayload(
+            "LLM claim payload claim.drug_classes must be an array of strings"
+        ) from exc
+
     class_terms: list[str] = []
     drug_terms: list[str] = []
+    canonical_ids: list[str] = []
 
     for term in raw_drugs:
         cleaned = _clean_str(term)
         if not cleaned:
-            continue
-        if _is_generic_class_term(cleaned):
-            class_terms.append(cleaned)
-        else:
-            drug_terms.append(cleaned)
+            raise InvalidClaimPayload(
+                "LLM claim payload claim.drugs contains an empty identifier"
+            )
+        if not cleaned.startswith("drug:"):
+            raise InvalidClaimPayload(
+                "LLM claim payload claim.drugs must use canonical 'drug:' identifiers"
+            )
+        if drug_catalog is None:
+            raise InvalidClaimPayload("LLM payload missing required field 'drugs'")
+        entry = drug_catalog.get(cleaned)
+        if entry is None:
+            raise InvalidClaimPayload(f"Claim references unknown drug id '{cleaned}'")
+        canonical_ids.append(entry.drug_id)
+        if entry.name:
+            drug_terms.append(entry.name)
+        class_terms.extend(entry.classes)
 
     for term in raw_classes:
         cleaned = _clean_str(term)
         if cleaned:
             class_terms.append(cleaned)
 
-    return _unique_terms(drug_terms), _unique_terms(class_terms)
+    unique_canonical = list(dict.fromkeys(canonical_ids))
+    return _unique_terms(drug_terms), _unique_terms(class_terms), unique_canonical
+
+
+def _build_drug_catalog(entries: object) -> tuple[dict[str, _DrugCatalogEntry], dict[str, set[str]]]:
+    catalog: dict[str, _DrugCatalogEntry] = {}
+    claim_to_drugs: dict[str, set[str]] = {}
+    if entries is None:
+        raise InvalidClaimPayload("LLM payload missing required field 'drugs'")
+
+    if isinstance(entries, (str, bytes)):
+        raise InvalidClaimPayload("LLM payload drugs must be an array of objects")
+
+    try:
+        entries_list = list(entries)
+    except TypeError as exc:
+        raise InvalidClaimPayload("LLM payload drugs must be an array of objects") from exc
+
+    if not entries_list:
+        raise InvalidClaimPayload("Drugs array must contain at least one entry")
+
+    for item in entries_list:
+        if not isinstance(item, dict):
+            raise InvalidClaimPayload("LLM payload drugs must contain objects")
+        raw_id = _clean_str(item.get("id"))
+        if not raw_id or not raw_id.startswith("drug:"):
+            raise InvalidClaimPayload("LLM payload drugs entries must include canonical 'drug:' ids")
+
+        name = _clean_str(item.get("name"))
+        if not name:
+            raise InvalidClaimPayload("LLM payload drugs entries must include non-empty 'name'")
+
+        claims_field = item.get("claims")
+        if claims_field is None:
+            raise InvalidClaimPayload("LLM payload drugs entries must include 'claims' arrays")
+        if isinstance(claims_field, (str, bytes)):
+            raise InvalidClaimPayload("LLM payload drugs claims must be an array of claim ids")
+        try:
+            claim_iter = list(claims_field)
+        except TypeError as exc:
+            raise InvalidClaimPayload("LLM payload drugs claims must be an array of claim ids") from exc
+
+        for claim_id in claim_iter:
+            cleaned_claim = _clean_str(claim_id)
+            if not cleaned_claim or not cleaned_claim.startswith("claim:"):
+                raise InvalidClaimPayload(
+                    "LLM payload drugs claims must contain canonical 'claim:' identifiers"
+                )
+            claim_to_drugs.setdefault(cleaned_claim, set()).add(raw_id)
+
+        class_values: list[str] = []
+        for class_term in item.get("classifications") or []:
+            cleaned_class = _clean_str(class_term)
+            if cleaned_class:
+                class_values.append(cleaned_class)
+
+        entry = _DrugCatalogEntry(drug_id=raw_id, name=name, classes=tuple(class_values))
+        catalog[raw_id] = entry
+
+    
+
+    return catalog, claim_to_drugs
+
+
+def _normalise_article_ids(values: object) -> list[tuple[str, str | None]]:
+    if not values:
+        return []
+
+    if isinstance(values, (str, bytes)):
+        raise InvalidClaimPayload("LLM claim payload articles must be an array of strings")
+
+    try:
+        iterator = iter(values)
+    except TypeError as exc:
+        raise InvalidClaimPayload("LLM claim payload articles must be an array of strings") from exc
+
+    normalised: list[tuple[str, str | None]] = []
+    for value in iterator:
+        token = _clean_str(value)
+        if not token:
+            raise InvalidClaimPayload("LLM claim payload articles contains an empty identifier")
+        if not token.startswith("article:"):
+            raise InvalidClaimPayload("LLM claim payload articles must use 'article:' prefix")
+        suffix = token[len("article:") :]
+        if not suffix or not suffix.isdigit():
+            raise InvalidClaimPayload(
+                "LLM claim payload articles must use 'article:' followed by numeric PMID"
+            )
+        normalised.append((token, suffix))
+
+    seen: set[str] = set()
+    deduped: list[tuple[str, str | None]] = []
+    for article_id, pmid in normalised:
+        if article_id in seen:
+            continue
+        seen.add(article_id)
+        deduped.append((article_id, pmid))
+    return deduped
 
 
 def _normalize_term_key(term: str) -> str:

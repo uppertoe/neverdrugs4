@@ -90,6 +90,52 @@ def test_mesh_builder_filters_disallowed_extra_tokens() -> None:
         assert all(banned not in term.lower() for term in result.mesh_terms)
 
 
+def test_mesh_builder_includes_alias_terms_in_query() -> None:
+    esearch_xml = """<?xml version='1.0' encoding='UTF-8'?>
+<eSearchResult>
+    <Count>1</Count>
+    <IdList>
+        <Id>111111</Id>
+    </IdList>
+</eSearchResult>
+"""
+    esummary_xml = """<?xml version='1.0' encoding='UTF-8'?>
+<eSummaryResult>
+    <DocSum>
+        <Id>111111</Id>
+        <Item Name=\"DS_MeshTerms\" Type=\"List\">
+            <Item Name=\"string\" Type=\"String\">Example Condition Syndrome</Item>
+            <Item Name=\"string\" Type=\"String\">Example Condition Variant</Item>
+            <Item Name=\"string\" Type=\"String\">Sample Disorder Alpha</Item>
+            <Item Name=\"string\" Type=\"String\">Alpha Neuro Disorder</Item>
+            <Item Name=\"string\" Type=\"String\">Example Condition Type 1</Item>
+            <Item Name=\"string\" Type=\"String\">Example Condition Type 2</Item>
+        </Item>
+    </DocSum>
+</eSummaryResult>
+"""
+    http_client = _SequentialHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_xml),
+    ])
+    builder = NIHMeshBuilder(http_client=http_client, max_terms=5)
+
+    result = builder("example condition")
+
+    assert result.mesh_terms[:4] == [
+        "Example Condition Syndrome",
+        "Example Condition Variant",
+        "Sample Disorder Alpha",
+        "Alpha Neuro Disorder",
+    ]
+    query = result.query_payload["esearch"]["query"]
+    assert query is not None
+    assert '"Sample Disorder Alpha"[mesh]' in query
+    assert '"Alpha Neuro Disorder"[mesh]' in query
+    assert '"Sample Disorder Alpha"[tiab]' in query
+    assert '"Alpha Neuro Disorder"[tiab]' in query
+
+
 def test_mesh_builder_handles_missing_ids() -> None:
     empty_esearch = """<?xml version='1.0' encoding='UTF-8'?><eSearchResult><Count>0</Count><IdList></IdList></eSearchResult>"""
     http_client = _SequentialHttpClient([

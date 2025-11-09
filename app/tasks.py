@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from time import sleep
-from typing import Sequence
+from typing import Callable, Sequence
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from .celery_app import celery
 from .database import create_session_factory
 from .models import ClaimSetRefresh
 from .services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
@@ -18,26 +18,25 @@ from .services.search import SearchResolution, compute_mesh_signature
 from .settings import load_settings
 
 
-@celery.task(bind=True)
-def ping(self) -> str:
-    """Simple task to verify Celery worker wiring."""
+def ping() -> str:
+    """Simple health check used by background workers."""
     sleep(0.1)
     return "pong"
 
 
-@celery.task(name="app.tasks.refresh_claims_for_condition", bind=True)
 def refresh_claims_for_condition(
-    self,
     *,
     resolution_id: int,
     condition_label: str,
     normalized_condition: str,
     mesh_terms: Sequence[str],
     mesh_signature: str | None,
+    job_id: str | None = None,
+    session_factory: Callable[[], Session] | None = None,
 ) -> str:
-    """Background refresh for a cached condition search."""
-    session_factory = create_session_factory()
-    session = session_factory()
+    """Execute the full ingest pipeline for a cached condition search."""
+    factory = session_factory or create_session_factory()
+    session = factory()
     refresh_job: ClaimSetRefresh | None = None
 
     try:
@@ -50,7 +49,6 @@ def refresh_claims_for_condition(
         )
         full_text_fetcher = NIHFullTextFetcher()
 
-        job_id = getattr(self.request, "id", None)
         if job_id:
             refresh_job = session.execute(
                 select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == job_id)
@@ -219,7 +217,6 @@ def refresh_claims_for_condition(
         return "empty-results" if claim_count == 0 else "completed"
     except Exception as exc:  # noqa: BLE001
         session.rollback()
-        job_id = getattr(self.request, "id", None)
         if job_id:
             refreshed_job = session.execute(
                 select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == job_id)
@@ -236,13 +233,13 @@ def refresh_claims_for_condition(
                 session.commit()
             else:
                 session.rollback()
-        raise self.retry(exc=exc, countdown=30, max_retries=3)
+        raise
     finally:
         session.close()
 
 
 def _update_refresh_progress(
-    session,
+    session: Session,
     refresh_job: ClaimSetRefresh,
     *,
     stage: str,

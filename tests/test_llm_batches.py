@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.models import ArticleArtefact, ArticleSnippet, SearchTerm
-from app.services.claims import ClaimEvidenceGroup
 from app.services.llm_batches import (
     LLMRequestBatch,
     SnippetLLMEntry,
+    _derive_prompt_context,
     _render_user_prompt,
     build_llm_batches,
 )
@@ -31,30 +31,141 @@ def test_render_user_prompt_downranks_generic_groups() -> None:
         severe_reaction_terms=[],
     )
 
-    group = ClaimEvidenceGroup[
-        SnippetLLMEntry
-    ](
-        group_key="risk:neuromuscular-blockers",
-        classification="risk",
-        drug_label="neuromuscular blocking agents",
-        drug_terms=("muscle relaxants",),
-        drug_classes=("neuromuscular blocking agent", "generic-class"),
-        snippets=[snippet],
-        top_score=2.5,
-    )
+    related_map, drugs_in_scope = _derive_prompt_context([snippet])
 
     prompt = _render_user_prompt(
         condition_label="King Denborough syndrome",
         mesh_terms=["King Denborough syndrome"],
         snippets=[snippet],
-        claim_groups=[group],
+        related_drug_map=related_map,
+        drugs_in_scope=drugs_in_scope,
     )
 
-    assert "muscle relaxants" in prompt
-    assert "overly broad" in prompt
-    assert "uncertain:dantrolene" not in prompt
+    assert "Muscle relaxants" in prompt
+    assert "related_drugs: none" in prompt
+    assert "DRUGS IN SCOPE" in prompt
+    assert "None identified" in prompt
     assert "Checklist" not in prompt
+    assert "Claim groups" not in prompt
 
+
+def test_derive_prompt_context_merges_group_drug_terms() -> None:
+    primary = SnippetLLMEntry(
+        pmid="111",
+        snippet_id=11,
+        drug="sevoflurane",
+        classification="risk",
+        snippet_text="Sevoflurane linked to malignant hyperthermia.",
+        snippet_score=5.0,
+        cues=["malignant hyperthermia"],
+        article_rank=1,
+        article_score=4.1,
+        citation_url="https://example.org/111",
+        article_title="Case series",
+        content_source="pubmed",
+        token_estimate=120,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
+    )
+    secondary = SnippetLLMEntry(
+        pmid="222",
+        snippet_id=22,
+        drug="desflurane",
+        classification="risk",
+        snippet_text="Desflurane also implicated in malignant hyperthermia.",
+        snippet_score=4.8,
+        cues=["mh"],
+        article_rank=2,
+        article_score=3.9,
+        citation_url="https://example.org/222",
+        article_title="Report",
+        content_source="pubmed",
+        token_estimate=100,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
+    )
+
+    related_map, drugs_in_scope = _derive_prompt_context([primary, secondary])
+
+    assert id(primary) in related_map
+    assert related_map[id(primary)] == {"sevoflurane", "desflurane"}
+    assert drugs_in_scope == ["desflurane", "sevoflurane"]
+
+
+def test_derive_prompt_context_ignores_generic_terms() -> None:
+    generic_snippet = SnippetLLMEntry(
+        pmid="333",
+        snippet_id=33,
+        drug="neuromuscular blocking agents",
+        classification="risk",
+        snippet_text="Generic mention without specificity.",
+        snippet_score=3.0,
+        cues=["risk"],
+        article_rank=5,
+        article_score=1.2,
+        citation_url="https://example.org/333",
+        article_title="Generic overview",
+        content_source="pubmed",
+        token_estimate=90,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
+    )
+
+    related_map, drugs_in_scope = _derive_prompt_context([generic_snippet])
+
+    assert related_map == {}
+    assert drugs_in_scope == []
+
+
+def test_render_user_prompt_lists_drugs_in_scope() -> None:
+    primary = SnippetLLMEntry(
+        pmid="111",
+        snippet_id=11,
+        drug="sevoflurane",
+        classification="risk",
+        snippet_text="Sevoflurane linked to malignant hyperthermia.",
+        snippet_score=5.0,
+        cues=["malignant hyperthermia"],
+        article_rank=1,
+        article_score=4.1,
+        citation_url="https://example.org/111",
+        article_title="Case series",
+        content_source="pubmed",
+        token_estimate=120,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
+    )
+    secondary = SnippetLLMEntry(
+        pmid="222",
+        snippet_id=22,
+        drug="desflurane",
+        classification="risk",
+        snippet_text="Desflurane also implicated in malignant hyperthermia.",
+        snippet_score=4.8,
+        cues=["mh"],
+        article_rank=2,
+        article_score=3.9,
+        citation_url="https://example.org/222",
+        article_title="Report",
+        content_source="pubmed",
+        token_estimate=100,
+        severe_reaction_flag=False,
+        severe_reaction_terms=[],
+    )
+
+    related_map, drugs_in_scope = _derive_prompt_context([primary, secondary])
+    prompt = _render_user_prompt(
+        condition_label="Central core disease",
+        mesh_terms=["Central core disease"],
+        snippets=[primary, secondary],
+        related_drug_map=related_map,
+        drugs_in_scope=drugs_in_scope,
+    )
+
+    assert "DRUGS IN SCOPE" in prompt
+    assert "1. desflurane" in prompt
+    assert "2. sevoflurane" in prompt
+    assert "cite every supporting article_id" in prompt
 
 def _make_search_term(session, canonical: str = "condition") -> SearchTerm:
     term = SearchTerm(canonical=canonical, created_at=datetime.now(timezone.utc))
@@ -188,30 +299,24 @@ def test_build_llm_batches_respects_token_budget_and_orders_snippets(session) ->
         assert batch.messages[1]["role"] == "user"
         user_content = batch.messages[1]["content"]
         assert "Return only JSON" in user_content
+        assert '"drugs"' in user_content
         assert '"claims"' in user_content
-        assert '"supporting_evidence"' in user_content
-        assert '"severe_reaction"' in user_content
+        assert '"atc_codes"' in user_content
+        assert '"idiosyncratic_reaction"' in user_content
+        assert '"drugs": [{"id": "drug:identifier"' in user_content
+        assert "related_drugs" in user_content
         # Ensure snippet metadata is present
         for snippet in batch.snippets:
-            assert snippet.citation_url.startswith("https://pubmed")
             assert snippet.token_estimate >= 1
             assert snippet.drug.lower() in user_content.lower()
+            assert f"article:{snippet.pmid}" in user_content
         assert "muscular dystrophy patients" not in batch.messages[0]["content"].lower()
         # Ensure article titles are exposed to the LLM
         for snippet in batch.snippets:
             assert snippet.article_title is not None
             assert snippet.article_title in user_content
-        # Verify claim grouping metadata attached to the batch
-        assert batch.claim_groups, "Expected at least one claim group per batch"
-        assert all(group.snippets for group in batch.claim_groups)
-        assert any("claim_group_id" in line for line in user_content.splitlines())
-
-    # ensure grouping merges volatile anesthetics label when available across batches
-    assert any(
-        group.drug_label == "volatile anesthetics"
-        for batch in batches
-        for group in batch.claim_groups
-    )
+        # Ensure instructions mention many-to-many handling
+        assert "attach all relevant drug_ids" in user_content
 
 
 def test_build_llm_batches_skips_generic_snippets_when_specific_available(session) -> None:
@@ -309,13 +414,13 @@ def test_build_llm_batches_uses_single_batch_when_under_budget(session) -> None:
         search_term_id=term.id,
         condition_label="Central core disease",
         mesh_terms=["Central core disease"],
-        max_prompt_tokens=900,
+        max_prompt_tokens=1100,
         max_snippets_per_batch=2,
     )
 
     assert len(batches) == 1
     assert len(batches[0].snippets) == 2
-    assert batches[0].token_estimate <= 900
+    assert batches[0].token_estimate <= 1100
 
 
 def test_build_llm_batches_interleaves_safety_snippets(session) -> None:

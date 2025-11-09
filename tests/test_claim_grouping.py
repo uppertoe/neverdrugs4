@@ -73,8 +73,8 @@ def test_group_snippets_clusters_by_drug_and_classification() -> None:
     assert risk_group.top_score == 5.0
 
     safety_group = next(group for group in groups if group.classification == "safety")
-    assert safety_group.drug_label == "propofol"
-    assert safety_group.drug_classes == ()
+    assert safety_group.drug_label == "intravenous anesthetics"
+    assert set(safety_group.drug_classes) == {"intravenous anesthetic"}
     assert {snippet.snippet_id for snippet in safety_group.snippets} == {3}
 
 
@@ -168,3 +168,32 @@ def test_group_snippets_flags_generic_class_groups() -> None:
 
     assert "generic-class" in generic_group.drug_classes
     assert generic_group.top_score < specific_group.top_score
+
+
+def test_group_snippets_merges_local_anesthetic_synonyms() -> None:
+    snippets = [
+        _entry(
+            snippet_id=41,
+            pmid="888001",
+            drug="lidocaine",
+            classification="safety",
+            score=3.4,
+            text="Lidocaine infusion prevented arrhythmia without adverse effects.",
+        ),
+        _entry(
+            snippet_id=42,
+            pmid="888002",
+            drug="lignocaine",
+            classification="safety",
+            score=3.1,
+            text="Lignocaine was recommended as the local anesthetic of choice.",
+        ),
+    ]
+
+    groups = group_snippets_for_claims(snippets)
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.drug_label == "local anesthetics"
+    assert set(group.drug_terms) == {"lidocaine", "lignocaine"}
+    assert "local anesthetic" in group.drug_classes

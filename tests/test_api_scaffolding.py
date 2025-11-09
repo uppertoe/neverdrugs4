@@ -223,11 +223,11 @@ def test_resolve_claims_schedules_refresh_job(
     resolve_mock.assert_called_once()
 
 
-@patch("app.api.routes.refresh_claims_for_condition.delay")
-def test_enqueue_claim_pipeline_enqueues_celery_task(delay_mock, session):
+@patch("app.api.routes.enqueue_claim_refresh")
+def test_enqueue_claim_pipeline_enqueues_job(enqueue_mock, session):
     from app.api.routes import enqueue_claim_pipeline
 
-    delay_mock.return_value = SimpleNamespace(id="celery-123")
+    enqueue_mock.return_value = {"job_id": "celery-123", "status": "queued"}
 
     resolution = SearchResolution(
         normalized_condition="duchenne muscular dystrophy",
@@ -245,11 +245,10 @@ def test_enqueue_claim_pipeline_enqueues_celery_task(delay_mock, session):
         mesh_signature=mesh_signature,
     )
 
-    delay_mock.assert_called_once_with(
-        resolution_id=resolution.search_term_id,
+    enqueue_mock.assert_called_once_with(
+        session=session,
+        resolution=resolution,
         condition_label="Duchenne",
-        normalized_condition=resolution.normalized_condition,
-        mesh_terms=list(resolution.mesh_terms),
         mesh_signature=mesh_signature,
     )
     assert job == {"job_id": "celery-123", "status": "queued"}

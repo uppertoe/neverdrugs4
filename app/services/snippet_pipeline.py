@@ -51,6 +51,9 @@ class SnippetExtractionPipeline:
         article_score: float,
         preferred_url: str,
         pmc_ref_count: int,
+        publication_date: str | None = None,
+        publication_types: Sequence[str] | None = None,
+        cohort_size: int | None = None,
     ) -> list[SnippetResult]:
         results = self.extractor.extract_snippet_results(
             article_text=article_text,
@@ -60,6 +63,9 @@ class SnippetExtractionPipeline:
             article_score=article_score,
             preferred_url=preferred_url,
             pmc_ref_count=pmc_ref_count,
+            publication_date=publication_date,
+            publication_types=publication_types,
+            cohort_size=cohort_size,
         )
         for processor in self.post_processors:
             results = list(processor.process(results))
@@ -75,6 +81,9 @@ class SnippetExtractionPipeline:
         article_score: float,
         preferred_url: str,
         pmc_ref_count: int,
+        publication_date: str | None = None,
+        publication_types: Sequence[str] | None = None,
+        cohort_size: int | None = None,
     ) -> list[SnippetCandidate]:
         results = self.run_results(
             article_text=article_text,
@@ -84,6 +93,9 @@ class SnippetExtractionPipeline:
             article_score=article_score,
             preferred_url=preferred_url,
             pmc_ref_count=pmc_ref_count,
+            publication_date=publication_date,
+            publication_types=publication_types,
+            cohort_size=cohort_size,
         )
         return [result.candidate for result in results]
 

@@ -5,7 +5,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.services import query_terms
 from app.services.query_terms import build_nih_search_query
 from app.services.nih_pubmed import MeshBuilderTermExpander
+from app.services.mesh_builder import NIHMeshBuilder
 from scripts.validate_mesh_terms import BASE_URL, fetch_mesh_descriptor_xml, load_mesh_descriptors
 
 
@@ -25,6 +26,7 @@ class TermRecord:
     is_mesh_field: bool
     valid_mesh: bool | None
     override_applied: bool
+    selected_by_builder: bool
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -34,7 +36,12 @@ class TermRecord:
             "is_mesh_field": self.is_mesh_field,
             "valid_mesh": self.valid_mesh,
             "override_applied": self.override_applied,
+            "selected_by_builder": self.selected_by_builder,
         }
+
+
+def _normalize_key(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
 
 
 def _normalize_sequence(values: Iterable[str]) -> list[str]:
@@ -52,7 +59,7 @@ def _normalize_sequence(values: Iterable[str]) -> list[str]:
             normalized = normalized[1:-1].strip()
             if not normalized:
                 continue
-        key = normalized.lower()
+        key = _normalize_key(normalized)
         if key in seen:
             continue
         seen.add(key)
@@ -77,7 +84,7 @@ def _collect_sections(
         expansion = term_expander(term)
         if not expansion:
             continue
-        expansion_map[term.lower()] = expansion
+        expansion_map[_normalize_key(term)] = expansion
         expanded_mesh_terms.extend(expansion.mesh_terms)
         expanded_text_terms.extend(expansion.alias_terms)
 
@@ -105,18 +112,20 @@ def _annotate_terms(
     sections: Sequence[tuple[str, str, Sequence[str]]],
     descriptors: set[str],
     expansion_map: dict[str, query_terms.ConditionTermExpansion],
+    builder_selected_keys: set[str],
 ) -> list[TermRecord]:
     annotated: list[TermRecord] = []
     for section, field, terms in sections:
         is_mesh_field = field in {"mesh", "pt"}
         for term in terms:
-            key = term.lower()
+            key = _normalize_key(term)
             valid_mesh = (key in descriptors) if is_mesh_field else None
             override_applied = False
             if section == "condition_mesh" and key in expansion_map:
                 override_applied = True
             elif section in {"condition_mesh_expanded", "condition_text_aliases"}:
                 override_applied = True
+            selected_by_builder = section.startswith("condition") and key in builder_selected_keys
             annotated.append(
                 TermRecord(
                     section=section,
@@ -125,16 +134,36 @@ def _annotate_terms(
                     is_mesh_field=is_mesh_field,
                     valid_mesh=valid_mesh,
                     override_applied=override_applied,
+                    selected_by_builder=selected_by_builder,
                 )
             )
     return annotated
 
 
-def _print_report(records: Sequence[TermRecord], query: str) -> None:
+def _print_report(
+    records: Sequence[TermRecord],
+    query: str,
+    builder_summary: Optional[dict[str, object]] = None,
+) -> None:
     print("PubMed query:\n----------------")
     print(query)
+    if builder_summary:
+        print("\nBuilder selection:\n------------------")
+        raw_condition = builder_summary.get("raw_condition")
+        selected_terms = builder_summary.get("mesh_terms", [])
+        max_terms = builder_summary.get("max_terms")
+        if raw_condition:
+            print(f"Raw condition: {raw_condition}")
+        if max_terms is not None:
+            print(f"Builder max terms: {max_terms}")
+        if selected_terms:
+            print("Selected MeSH terms:")
+            for term in selected_terms:
+                print(f"  - {term}")
+        else:
+            print("Builder returned no MeSH terms.")
     print("\nTerm validation:\n----------------")
-    header = f"{'Section':24} {'Field':6} {'Term':50} {'Valid Mesh':11}"
+    header = f"{'Section':24} {'Field':6} {'Term':50} {'Valid Mesh':11} {'Builder?':9}"
     print(header)
     print("-" * len(header))
     for record in records:
@@ -143,7 +172,8 @@ def _print_report(records: Sequence[TermRecord], query: str) -> None:
             status = "yes"
         elif record.valid_mesh is False:
             status = "NO"
-        line = f"{record.section:24} {record.field:6} {record.term:50} {status:>11}"
+        builder_flag = "yes" if record.selected_by_builder else ""
+        line = f"{record.section:24} {record.field:6} {record.term:50} {status:>11} {builder_flag:>9}"
         print(line)
 
     invalid_records = [rec for rec in records if rec.valid_mesh is False and not rec.override_applied]
@@ -163,8 +193,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "condition_mesh",
-        nargs="+",
-        help="MeSH descriptors representing the condition of interest.",
+        nargs="*",
+        help="Condition descriptors or raw condition text (see --explicit-mesh).",
     )
     parser.add_argument(
         "--additional-text",
@@ -188,23 +218,81 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Emit JSON instead of a human-readable table.",
     )
+    parser.add_argument(
+        "--raw-condition",
+        type=str,
+        help="Raw condition string to resolve via the NIH MeshBuilder.",
+    )
+    parser.add_argument(
+        "--max-terms",
+        type=int,
+        default=5,
+        help="Maximum number of condition MeSH terms to request from the builder (default: 5).",
+    )
+    parser.add_argument(
+        "--no-builder",
+        action="store_true",
+        help="Disable automatic MeshBuilder resolution even when a raw condition is provided.",
+    )
+    parser.add_argument(
+        "--explicit-mesh",
+        action="store_true",
+        help="Treat positional arguments as explicit MeSH descriptors rather than raw condition text.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
 
+    condition_inputs = list(args.condition_mesh)
+    raw_condition = args.raw_condition
+    additional_text_terms = list(args.additional_text)
+
+    if raw_condition is None and condition_inputs and not args.explicit_mesh:
+        raw_condition = condition_inputs.pop(0)
+
+    builder_selected_terms: list[str] = []
+    builder_summary: Optional[dict[str, object]] = None
+
+    if raw_condition:
+        additional_text_terms.append(raw_condition)
+
+    condition_mesh_terms = list(condition_inputs)
+
+    if raw_condition and not args.no_builder:
+        builder = NIHMeshBuilder(max_terms=args.max_terms)
+        build_result = builder(raw_condition)
+        if build_result.mesh_terms:
+            condition_mesh_terms = list(build_result.mesh_terms)
+            condition_mesh_terms.extend(condition_inputs)
+            builder_selected_terms = list(build_result.mesh_terms)
+        else:
+            if not condition_mesh_terms:
+                condition_mesh_terms = [raw_condition]
+        builder_summary = {
+            "raw_condition": raw_condition,
+            "mesh_terms": builder_selected_terms,
+            "max_terms": args.max_terms,
+        }
+    elif raw_condition and args.no_builder:
+        condition_mesh_terms.insert(0, raw_condition)
+
+    if not condition_mesh_terms:
+        raise SystemExit("Provide at least one condition descriptor or raw condition text.")
+
     descriptor_path = fetch_mesh_descriptor_xml(args.mesh_url, cache_dir=args.cache_dir)
     descriptors = load_mesh_descriptors(descriptor_path)
 
     term_expander = MeshBuilderTermExpander()
 
-    sections, expansion_map = _collect_sections(args.condition_mesh, args.additional_text, term_expander)
-    records = _annotate_terms(sections, descriptors, expansion_map)
+    sections, expansion_map = _collect_sections(condition_mesh_terms, additional_text_terms, term_expander)
+    builder_selected_keys = {_normalize_key(term) for term in builder_selected_terms}
+    records = _annotate_terms(sections, descriptors, expansion_map, builder_selected_keys)
 
     query = build_nih_search_query(
-        args.condition_mesh,
-        additional_text_terms=args.additional_text,
+        condition_mesh_terms,
+        additional_text_terms=additional_text_terms,
         term_expander=term_expander,
     )
 
@@ -212,10 +300,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = {
             "query": query,
             "terms": [record.as_dict() for record in records],
+            "builder": builder_summary,
         }
         print(json.dumps(payload, indent=2))
     else:
-        _print_report(records, query)
+        _print_report(records, query, builder_summary)
     return 0
 
 

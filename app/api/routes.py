@@ -17,9 +17,9 @@ from app.models import (
     SearchArtefact,
     SearchTerm,
 )
+from app.job_queue import enqueue_claim_refresh
 from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from app.services.search import compute_mesh_signature
-from app.tasks import refresh_claims_for_condition
 
 DEFAULT_REFRESH_STALE_SECONDS = 300
 DEFAULT_REFRESH_STALE_QUEUE_SECONDS = 60
@@ -418,19 +418,14 @@ def enqueue_claim_pipeline(
     mesh_signature: str | None,
 ) -> dict[str, object]:
     """Schedule the claim processing pipeline for the provided resolution."""
-    _ = session  # reserved for later use (e.g., recording job metadata)
     resolved_signature = mesh_signature or compute_mesh_signature(list(resolution.mesh_terms))
-    async_result = refresh_claims_for_condition.delay(
-        resolution_id=resolution.search_term_id,
+    result = enqueue_claim_refresh(
+        session=session,
+        resolution=resolution,
         condition_label=condition_label,
-        normalized_condition=resolution.normalized_condition,
-        mesh_terms=list(resolution.mesh_terms),
         mesh_signature=resolved_signature,
     )
-    return {
-        "job_id": async_result.id,
-        "status": "queued",
-    }
+    return dict(result)
 
 
 @api_blueprint.get("/search/<string:search_term_ref>/query")

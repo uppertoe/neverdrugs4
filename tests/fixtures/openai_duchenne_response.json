@@ -2,37 +2,55 @@
   {
     "batch_index": 0,
     "model": "gpt-5-mini",
-    "response_id": "resp_0d761f9193a81fb10068fed9fc54f48194a26d1f76f749c8c5",
+    "response_id": "resp_03f7e18bb213ba9c00690bd2c208ac8196aeecbe915d330ee6",
     "usage": {
-      "prompt_tokens": 1492,
-      "completion_tokens": 672,
-      "total_tokens": 2164
+      "prompt_tokens": 1750,
+      "completion_tokens": 1533,
+      "total_tokens": 3283
     },
-    "content": "{\n  \"condition\": \"Duchenne muscular dystrophy\",\n  \"claims\": [\n    {\n      \"claim_id\": \"risk:succinylcholine\",\n      \"classification\": \"risk\",\n      \"drug_classes\": [\n        \"depolarising neuromuscular blocker\"\n      ],\n      \"drugs\": [\n        \"succinylcholine\"\n      ],\n      \"summary\": \"Case reports link succinylcholine administration in patients with Duchenne muscular dystrophy to malignant hyperthermia\u2013like reactions during anesthesia, indicating an elevated perioperative risk.\",\n      \"confidence\": \"medium\",\n      \"supporting_evidence\": [\n        {\n          \"snippet_id\": \"1\",\n          \"pmid\": \"11111111\",\n          \"article_title\": \"Safety considerations for neuromuscular blockade in dystrophinopathies\",\n          \"key_points\": [\n            \"Case reports describe malignant hyperthermia-like reactions in Duchenne muscular dystrophy patients after succinylcholine exposure during anesthesia.\",\n            \"Authors suggest these reports indicate an elevated perioperative risk associated with succinylcholine in this population.\"\n          ],\n          \"notes\": \"Classification as risk is based on the snippet explicitly naming succinylcholine as the precipitating agent; evidence derives from case reports (limited level of evidence), so confidence is medium.\"\n        }\n      ]\n    }\n  ]\n}",
+    "content": "{\n  \"condition\": \"Duchenne muscular dystrophy\",\n  \"drugs\": [\n    {\n      \"id\": \"drug:succinylcholine\",\n      \"name\": \"succinylcholine\",\n      \"classifications\": [],\n      \"atc_codes\": [],\n      \"claims\": [\n        \"claim:malignant-hyperthermia-like-succinylcholine\"\n      ]\n    }\n  ],\n  \"claims\": [\n    {\n      \"id\": \"claim:malignant-hyperthermia-like-succinylcholine\",\n      \"type\": \"risk\",\n      \"summary\": \"Case reports describe malignant hyperthermia-like reactions in patients with Duchenne muscular dystrophy who received succinylcholine during anesthesia, indicating an elevated perioperative risk associated with succinylcholine in this population.\",\n      \"confidence\": \"low\",\n      \"idiosyncratic_reaction\": {\n        \"flag\": true,\n        \"descriptors\": [\n          \"malignant hyperthermia-like reaction\"\n        ]\n      },\n      \"articles\": [\n        \"article:11111111\"\n      ],\n      \"drugs\": [\n        \"drug:succinylcholine\"\n      ],\n      \"drug_classes\": [],\n      \"supporting_evidence\": [\n        {\n          \"snippet_id\": \"snippet:1\",\n          \"pmid\": \"11111111\",\n          \"article_title\": \"Safety considerations for neuromuscular blockade in dystrophinopathies\",\n          \"key_points\": [\n            \"Case reports highlight malignant hyperthermia-like reactions when patients with Duchenne muscular dystrophy receive succinylcholine during anesthesia.\",\n            \"These reports suggest an elevated perioperative risk associated with succinylcholine in dystrophinopathies.\"\n          ],\n          \"notes\": \"\"\n        }\n      ]\n    }\n  ]\n}",
     "parsed": {
       "condition": "Duchenne muscular dystrophy",
+      "drugs": [
+        {
+          "id": "drug:succinylcholine",
+          "name": "succinylcholine",
+          "classifications": [],
+          "atc_codes": [],
+          "claims": [
+            "claim:malignant-hyperthermia-like-succinylcholine"
+          ]
+        }
+      ],
       "claims": [
         {
-          "claim_id": "risk:succinylcholine",
-          "classification": "risk",
-          "drug_classes": [
-            "depolarising neuromuscular blocker"
+          "id": "claim:malignant-hyperthermia-like-succinylcholine",
+          "type": "risk",
+          "summary": "Case reports describe malignant hyperthermia-like reactions in patients with Duchenne muscular dystrophy who received succinylcholine during anesthesia, indicating an elevated perioperative risk associated with succinylcholine in this population.",
+          "confidence": "low",
+          "idiosyncratic_reaction": {
+            "flag": true,
+            "descriptors": [
+              "malignant hyperthermia-like reaction"
+            ]
+          },
+          "articles": [
+            "article:11111111"
           ],
           "drugs": [
-            "succinylcholine"
+            "drug:succinylcholine"
           ],
-          "summary": "Case reports link succinylcholine administration in patients with Duchenne muscular dystrophy to malignant hyperthermia\u2013like reactions during anesthesia, indicating an elevated perioperative risk.",
-          "confidence": "medium",
+          "drug_classes": [],
           "supporting_evidence": [
             {
-              "snippet_id": "1",
+              "snippet_id": "snippet:1",
               "pmid": "11111111",
               "article_title": "Safety considerations for neuromuscular blockade in dystrophinopathies",
               "key_points": [
-                "Case reports describe malignant hyperthermia-like reactions in Duchenne muscular dystrophy patients after succinylcholine exposure during anesthesia.",
-                "Authors suggest these reports indicate an elevated perioperative risk associated with succinylcholine in this population."
+                "Case reports highlight malignant hyperthermia-like reactions when patients with Duchenne muscular dystrophy receive succinylcholine during anesthesia.",
+                "These reports suggest an elevated perioperative risk associated with succinylcholine in dystrophinopathies."
               ],
-              "notes": "Classification as risk is based on the snippet explicitly naming succinylcholine as the precipitating agent; evidence derives from case reports (limited level of evidence), so confidence is medium."
+              "notes": ""
             }
           ]
         }

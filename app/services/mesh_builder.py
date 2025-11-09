@@ -23,6 +23,18 @@ DEFAULT_DISALLOWED_EXTRA_TOKENS: tuple[str, ...] = (
     "virology",
 )
 
+_GENERIC_ALIAS_TOKENS: set[str] = {
+    "disease",
+    "diseases",
+    "disorder",
+    "disorders",
+    "syndrome",
+    "syndromes",
+    "type",
+    "types",
+    "of",
+}
+
 
 @dataclass(slots=True)
 class ESearchResult:
@@ -82,14 +94,18 @@ class NIHMeshBuilder:
             return MeshBuildResult(mesh_terms=[], query_payload=payload, source="nih-esearch+esummary")
 
         esummary = self._fetch_esummary(esearch.primary_id)
+        alias_tokens = self._collect_alias_tokens(esummary.mesh_terms, normalized_term)
+
         ranked_terms, query_tokens, primary_token = self._rank_terms(
             esummary.mesh_terms,
             normalized_term,
+            alias_tokens=alias_tokens,
         )
         selected_terms = self._select_terms(
             ranked_terms,
             query_tokens=query_tokens,
             primary_token=primary_token,
+            alias_tokens=alias_tokens,
         )
 
         payload["esummary"] = {
@@ -160,11 +176,14 @@ class NIHMeshBuilder:
         self,
         candidates: list[str],
         normalized_query: str,
+        *,
+        alias_tokens: Optional[set[str]] = None,
     ) -> tuple[list["_RankedTerm"], set[str], Optional[str]]:
         ranked: list[_RankedTerm] = []
         query_norm = normalize_condition(normalized_query)
         query_token_list = _tokenize_for_mesh(query_norm)
         query_tokens = set(query_token_list)
+        alias_tokens = set(alias_tokens or set())
         primary_token = query_token_list[0] if query_token_list else None
         for index, term in enumerate(candidates):
             term_norm = normalize_condition(term)
@@ -172,9 +191,21 @@ class NIHMeshBuilder:
             tokens = set(term_token_list)
             if not tokens:
                 continue
-            overlap = len(tokens & query_tokens)
-            union_size = len(tokens | query_tokens) or 1
-            jaccard = overlap / union_size
+            base_overlap = len(tokens & query_tokens)
+            base_union = len(tokens | query_tokens) or 1
+            base_jaccard = base_overlap / base_union
+            alias_overlap = len(tokens & alias_tokens)
+            has_primary_token = bool(primary_token and primary_token in tokens)
+            if base_jaccard == 0 and alias_overlap:
+                combined_tokens = tokens | query_tokens | alias_tokens
+                union_size = len(combined_tokens) or 1
+                jaccard = alias_overlap / union_size
+                overlap = alias_overlap
+            else:
+                jaccard = base_jaccard
+                overlap = base_overlap
+            if has_primary_token and jaccard < 1.0:
+                jaccard = min(1.0, jaccard + 0.2)
             ranked.append(
                 _RankedTerm(
                     term=term,
@@ -183,6 +214,8 @@ class NIHMeshBuilder:
                     token_sequence=tuple(term_token_list),
                     overlap=overlap,
                     jaccard=jaccard,
+                    alias_overlap=alias_overlap,
+                    has_primary_token=has_primary_token,
                     index=index,
                     extra_tokens=sorted(tokens - query_tokens),
                 )
@@ -196,13 +229,15 @@ class NIHMeshBuilder:
         *,
         query_tokens: set[str],
         primary_token: Optional[str],
+        alias_tokens: set[str],
     ) -> list[str]:
         selected: list[str] = []
         seen_sequences: set[Tuple[str, ...]] = set()
+        alias_tokens = set(alias_tokens)
         for entry in ranked_terms:
             if entry.token_sequence in seen_sequences:
                 continue
-            if self._is_disallowed(entry, primary_token=primary_token):
+            if self._is_disallowed(entry, primary_token=primary_token, alias_tokens=alias_tokens):
                 continue
             seen_sequences.add(entry.token_sequence)
             selected.append(entry.term)
@@ -215,17 +250,61 @@ class NIHMeshBuilder:
         entry: "_RankedTerm",
         *,
         primary_token: Optional[str],
+        alias_tokens: set[str],
     ) -> bool:
+        alias_hit = bool(entry.alias_overlap)
         extra_tokens = set(entry.extra_tokens)
         if extra_tokens & self.disallowed_extra_tokens:
             return True
-        if entry.jaccard == 0:
+        if entry.jaccard == 0 and not alias_hit:
             return True
-        if self.require_primary_token and primary_token and primary_token not in entry.tokens:
+        if self.require_primary_token and primary_token and not entry.has_primary_token and not alias_hit:
             return True
         if "type" in extra_tokens and "progressive" not in entry.tokens:
             return True
         return False
+
+    def _collect_alias_tokens(self, mesh_terms: list[str], normalized_query: str) -> set[str]:
+        if not mesh_terms:
+            return set()
+
+        normalized_terms = [normalize_condition(term) for term in mesh_terms]
+        query_tokens = set(_tokenize_for_mesh(normalize_condition(normalized_query)))
+        tokens_by_index = [set(_tokenize_for_mesh(term)) for term in normalized_terms]
+
+        focus_indices: list[int] = []
+        if query_tokens:
+            focus_indices = [idx for idx, tokens in enumerate(tokens_by_index) if tokens & query_tokens]
+
+        if not focus_indices and query_tokens:
+            best_index: Optional[int] = None
+            best_score = 0.0
+            for idx, tokens in enumerate(tokens_by_index):
+                if not tokens:
+                    continue
+                overlap = len(tokens & query_tokens)
+                if overlap == 0:
+                    continue
+                union = len(tokens | query_tokens) or 1
+                score = overlap / union
+                if score > best_score:
+                    best_score = score
+                    best_index = idx
+            if best_index is not None:
+                focus_indices.append(best_index)
+
+        if not focus_indices:
+            return set()
+
+        window_start = max(0, min(focus_indices) - 6)
+        window_end = min(len(mesh_terms), max(focus_indices) + 7)
+        tokens: set[str] = set()
+        for term in mesh_terms[window_start:window_end]:
+            normalized = normalize_condition(term)
+            tokens.update(_tokenize_for_mesh(normalized))
+
+        meaningful_tokens = {token for token in tokens if token and token not in _GENERIC_ALIAS_TOKENS}
+        return meaningful_tokens
 
 
 @dataclass(slots=True)
@@ -236,6 +315,8 @@ class _RankedTerm:
     token_sequence: tuple[str, ...]
     overlap: int
     jaccard: float
+    alias_overlap: int
+    has_primary_token: bool
     index: int
     extra_tokens: list[str]
 
@@ -245,6 +326,8 @@ class _RankedTerm:
             "normalized": self.normalized,
             "overlap": self.overlap,
             "jaccard": round(self.jaccard, 4),
+            "alias_overlap": self.alias_overlap,
+            "has_primary_token": self.has_primary_token,
             "rank": self.index,
             "extra_tokens": self.extra_tokens,
             "token_sequence": list(self.token_sequence),

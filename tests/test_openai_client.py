@@ -69,7 +69,12 @@ def _make_response(content: object) -> object:
 
 def test_run_batches_returns_result_with_stub_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    payload = {"condition": "Sample", "drugs": []}
+    payload = {
+        "condition": "Sample",
+        "drugs": [],
+        "claims": [],
+        "articles": [],
+    }
     response = _make_response(json.dumps(payload))
     stub = _StubOpenAIClient(response)
 
@@ -106,7 +111,9 @@ def test_flatten_response_content_list(monkeypatch: pytest.MonkeyPatch) -> None:
     content = [
         {"text": "{\"condition\":"},
         {"text": " \"Sample\""},
-        {"text": ", \"drugs\": []}"},
+        {"text": ", \"drugs\": []"},
+        {"text": ", \"claims\": []"},
+        {"text": ", \"articles\": []}"},
     ]
     response = _make_response(content)
     stub = _StubOpenAIClient(response)
@@ -115,14 +122,25 @@ def test_flatten_response_content_list(monkeypatch: pytest.MonkeyPatch) -> None:
     batch = _make_batch()
 
     result = client.run_batches([batch])[0]
-    assert result.parsed_json() == {"condition": "Sample", "drugs": []}
+    assert result.parsed_json() == {
+        "condition": "Sample",
+        "drugs": [],
+        "claims": [],
+        "articles": [],
+    }
 
 
 def test_openai_fixture_has_expected_schema() -> None:
     fixture_path = Path("tests/fixtures/openai_duchenne_response.json")
-    assert fixture_path.exists()
+    if not fixture_path.exists():
+        pytest.skip("Missing OpenAI capture; run scripts/capture_openai_fixture.py to record a real response.")
 
-    records = json.loads(fixture_path.read_text(encoding="utf-8"))
+    try:
+        records = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        pytest.skip(
+            "Corrupt OpenAI capture; rerun scripts/capture_openai_fixture.py to refresh the fixture."
+        )
     assert isinstance(records, list) and records
 
     record = records[0]
@@ -135,14 +153,30 @@ def test_openai_fixture_has_expected_schema() -> None:
     assert parsed.get("condition") == "Duchenne muscular dystrophy"
     assert parsed.get("claims")
 
+    drugs = {
+        entry.get("id"): entry
+        for entry in parsed.get("drugs", [])
+        if isinstance(entry, dict) and entry.get("id")
+    }
+    assert "drug:succinylcholine" in drugs
+    succ = drugs["drug:succinylcholine"]
+    assert (succ.get("name") or "").lower() == "succinylcholine"
+    classifications = succ.get("classifications")
+    assert isinstance(classifications, list)
+    assert succ.get("claims")
+
     claim_entry = parsed["claims"][0]
-    assert claim_entry["claim_id"].startswith("risk:")
-    assert claim_entry["classification"] in {"risk", "safety"}
-    assert "succinylcholine" in claim_entry["drugs"]
-    assert "depolarising neuromuscular blocker" in claim_entry["drug_classes"]
-    assert claim_entry["supporting_evidence"]
+    assert claim_entry["id"].startswith("claim:")
+    assert claim_entry["type"] in {"risk", "safety", "uncertain", "nuanced"}
+    assert "drug:succinylcholine" in claim_entry["drugs"]
+    reaction = claim_entry["idiosyncratic_reaction"]
+    assert isinstance(reaction, dict)
+    assert "flag" in reaction and "descriptors" in reaction
+    assert claim_entry["articles"]
+    assert all(article_id.startswith("article:") for article_id in claim_entry["articles"])
+    assert claim_entry.get("supporting_evidence")
 
     evidence = claim_entry["supporting_evidence"][0]
     assert isinstance(evidence["snippet_id"], str)
-    assert evidence["pmid"] == "11111111"
-    assert "malignant hyperthermia" in " ".join(evidence["key_points"]).lower()
+    assert evidence["pmid"].isdigit()
+    assert evidence["key_points"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 from xml.etree import ElementTree
 
 import httpx
@@ -32,6 +32,48 @@ from app.settings import (
     DEFAULT_BASE_FULL_TEXT_ARTICLES,
     DEFAULT_MAX_FULL_TEXT_ARTICLES,
 )
+
+
+_COHORT_KEYS = (
+    "cohort_size",
+    "sample_size",
+    "participant_count",
+    "participants",
+    "population_size",
+    "study_size",
+    "study_population",
+    "n",
+)
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        candidate = int(value)
+        return candidate if candidate > 0 else None
+    if isinstance(value, str):
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if digits:
+            candidate = int(digits)
+            return candidate if candidate > 0 else None
+    return None
+
+
+def _extract_cohort_size(citation: dict[str, Any] | None) -> int | None:
+    if not citation:
+        return None
+    for key in _COHORT_KEYS:
+        raw = citation.get(key)
+        size = _coerce_positive_int(raw)
+        if size is not None:
+            return size
+        if isinstance(raw, dict):
+            for inner in raw.values():
+                size = _coerce_positive_int(inner)
+                if size is not None:
+                    return size
+    return None
 
 
 @dataclass(slots=True)
@@ -302,6 +344,11 @@ def collect_pubmed_articles(
             pmc_ref_count = int(pmc_ref_count_val) if pmc_ref_count_val is not None else 0
         except (TypeError, ValueError):
             pmc_ref_count = 0
+        publication_date = citation.get("publication_date") if isinstance(citation, dict) else None
+        publication_types = (
+            tuple(citation.get("publication_types") or []) if isinstance(citation, dict) else ()
+        )
+        cohort_size = _extract_cohort_size(citation if isinstance(citation, dict) else None)
 
         extracted = pipeline.run(
             article_text=text,
@@ -311,6 +358,9 @@ def collect_pubmed_articles(
             article_score=artefact.score,
             preferred_url=preferred_url,
             pmc_ref_count=pmc_ref_count,
+            publication_date=publication_date,
+            publication_types=publication_types,
+            cohort_size=cohort_size,
         )
         snippet_candidates.extend(extracted)
 
