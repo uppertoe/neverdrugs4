@@ -409,6 +409,21 @@ def test_persist_processed_claims_rejects_scalar_reaction_descriptors(session) -
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
 
+def test_persist_processed_claims_rejects_noniterable_reaction_descriptors(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="56565654")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload["claims"][0]["idiosyncratic_reaction"]["descriptors"] = 123
+
+    with pytest.raises(
+        InvalidClaimPayload,
+        match="idiosyncratic_reaction.descriptors must be an array of strings",
+    ):
+        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+
 def test_persist_processed_claims_rejects_invalid_supporting_evidence(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
@@ -499,6 +514,21 @@ def test_persist_processed_claims_rejects_supporting_evidence_scalar_key_points(
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
 
+def test_persist_processed_claims_rejects_supporting_evidence_noniterable_key_points(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="67676766")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload["claims"][0]["supporting_evidence"][0]["key_points"] = 123
+
+    with pytest.raises(
+        InvalidClaimPayload,
+        match="supporting_evidence.key_points must be an array of strings",
+    ):
+        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+
 def test_persist_processed_claims_rejects_noncanonical_articles(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
@@ -521,6 +551,21 @@ def test_persist_processed_claims_rejects_scalar_articles(session) -> None:
 
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["claims"][0]["articles"] = "article:78787871"
+
+    with pytest.raises(
+        InvalidClaimPayload,
+        match="articles must be an array of strings",
+    ):
+        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+
+def test_persist_processed_claims_rejects_noniterable_articles(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="78787875")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload["claims"][0]["articles"] = 123
 
     with pytest.raises(
         InvalidClaimPayload,
@@ -988,6 +1033,21 @@ def test_persist_processed_claims_rejects_scalar_reaction_payload(session) -> No
     with pytest.raises(
         InvalidClaimPayload,
         match="idiosyncratic_reaction' must be an object",
+    ):
+        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+
+def test_persist_processed_claims_rejects_missing_reaction_payload(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="32323233")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload["claims"][0]["idiosyncratic_reaction"] = None
+
+    with pytest.raises(
+        InvalidClaimPayload,
+        match="LLM claim payload missing required field 'idiosyncratic_reaction'",
     ):
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
