@@ -32,12 +32,14 @@ def _make_result(
     drug: str,
     score: float,
     classification: Literal["risk", "safety"] = "risk",
+    snippet_text: str | None = None,
 ) -> SnippetResult:
+    text = snippet_text if snippet_text is not None else f"snippet-{drug}-{score}"
     candidate = SnippetCandidate(
         pmid=pmid,
         drug=drug,
         classification=classification,
-        snippet_text=f"snippet-{drug}",
+        snippet_text=text,
         article_rank=1,
         article_score=4.0,
         preferred_url="https://example.org",
@@ -56,17 +58,21 @@ def _make_result(
     return SnippetResult(candidate=candidate, span=span, metadata={})
 
 
-def test_generate_quota_grid_filters_invalid_pairs() -> None:
-    configs = generate_quota_grid(base_range=(1, 2), max_range=(1, 2))
+def test_generate_quota_grid_builds_cartesian_products() -> None:
+    configs = generate_quota_grid(per_drug_limits=(1, 2), max_total_results=(None, 4))
 
-    assert all(config.max_quota >= config.base_quota for config in configs)
-    assert any(config.base_quota == 1 and config.max_quota == 2 for config in configs)
+    per_drug_values = {config.per_drug_limit for config in configs}
+    total_caps = {config.max_total_snippets for config in configs}
+
+    assert per_drug_values == {1, 2}
+    assert total_caps == {None, 4}
 
 
 def test_grid_search_selects_highest_scoring_config() -> None:
     snippet_results = [
-        _make_result("pmid-1", "propofol", 3.0),
-        _make_result("pmid-1", "ketamine", 2.0),
+        _make_result("pmid-1", "propofol", 3.0, snippet_text="propofol-primary"),
+        _make_result("pmid-1", "propofol", 2.5, snippet_text="propofol-secondary"),
+        _make_result("pmid-1", "ketamine", 2.0, snippet_text="ketamine-primary"),
     ]
     extractor = _StaticExtractor(snippet_results)
 
@@ -86,16 +92,16 @@ def test_grid_search_selects_highest_scoring_config() -> None:
     ]
 
     configs = [
-        SnippetPipelineConfig(base_quota=1, max_quota=1),
-        SnippetPipelineConfig(base_quota=2, max_quota=2),
+        SnippetPipelineConfig(per_drug_limit=1),
+        SnippetPipelineConfig(per_drug_limit=2),
     ]
 
     tuning_results = grid_search_pipeline_configs(
         configs,
         articles=articles,
         evaluate_results=evaluate,
-    extractor=extractor,
+        extractor=extractor,
     )
 
-    assert tuning_results[0].config.base_quota == 2
+    assert tuning_results[0].config.per_drug_limit == 2
     assert tuning_results[0].score > tuning_results[1].score

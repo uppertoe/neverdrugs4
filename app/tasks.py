@@ -24,6 +24,9 @@ def ping() -> str:
     return "pong"
 
 
+from .celery_app import celery  # noqa: E402  (delayed to avoid circular import during module load)
+
+
 def refresh_claims_for_condition(
     *,
     resolution_id: int,
@@ -186,7 +189,12 @@ def refresh_claims_for_condition(
             condition_label=condition_label,
             llm_payloads=responses,
         )
-        claim_count = len(claim_set.claims) if getattr(claim_set, "claims", None) is not None else 0
+        if hasattr(claim_set, "get_active_claims"):
+            claim_count = len(claim_set.get_active_claims())
+        elif getattr(claim_set, "claims", None) is not None:
+            claim_count = len(claim_set.claims)
+        else:
+            claim_count = 0
 
         if refresh_job is not None:
             refresh_job.error_message = None
@@ -250,4 +258,17 @@ def _update_refresh_progress(
     refresh_job.progress_state = stage
     refresh_job.progress_payload = details or {}
     session.flush()
+
+
+@celery.task(name="app.tasks.ping")
+def ping_task() -> str:
+    """Celery entrypoint delegating to the synchronous ping helper."""
+    return ping()
+
+
+@celery.task(name="app.tasks.refresh_claims_for_condition", bind=True)
+def refresh_claims_for_condition_task(self, **kwargs) -> str:
+    """Celery entrypoint forwarding execution to the synchronous pipeline."""
+    job_id = getattr(self.request, "id", None)
+    return refresh_claims_for_condition(job_id=job_id, **kwargs)
 

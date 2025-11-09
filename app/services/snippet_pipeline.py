@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Protocol, Sequence
 
-from app.services.snippet_pruning import apply_article_quotas
-from app.services.snippet_scoring import SnippetQuotaConfig
 from app.services.snippets import ArticleSnippetExtractor, SnippetCandidate, SnippetResult
 
 
@@ -13,26 +12,49 @@ class SnippetPostProcessor(Protocol):
         ...
 
 
+def _default_sort_key(result: SnippetResult) -> tuple[int, float]:
+    candidate = result.candidate
+    return (candidate.article_rank, -candidate.snippet_score)
+
+
 @dataclass(slots=True)
 class SnippetPipelineConfig:
-    base_quota: int = 3
-    max_quota: int = 8
-    quota_strategy: Callable[..., Sequence[SnippetCandidate]] = field(
-        default=apply_article_quotas,
+    per_drug_limit: int = 3
+    max_total_snippets: int | None = None
+    sort_key: Callable[[SnippetResult], tuple[int, float]] = field(
+        default=_default_sort_key,
         repr=False,
     )
-    quota_config: SnippetQuotaConfig | None = None
 
-    def apply_quota(self, candidates: Sequence[SnippetCandidate]) -> list[SnippetCandidate]:
-        if not candidates:
+    def apply_limits(self, results: Sequence[SnippetResult]) -> list[SnippetResult]:
+        if not results:
             return []
-        selected = self.quota_strategy(
-            candidates,
-            base_quota=self.base_quota,
-            max_quota=self.max_quota,
-            quota_config=self.quota_config,
-        )
-        return list(selected)
+
+        per_drug_limit = max(1, self.per_drug_limit)
+        unique_drugs = {
+            (result.candidate.drug or "").lower()
+            for result in results
+        }
+        if not unique_drugs:
+            return []
+
+        total_cap = per_drug_limit * len(unique_drugs)
+        if self.max_total_snippets is not None:
+            total_cap = min(total_cap, max(1, self.max_total_snippets))
+
+        counts: dict[str, int] = defaultdict(int)
+        ordered = sorted(results, key=self.sort_key)
+        limited: list[SnippetResult] = []
+        for result in ordered:
+            drug = (result.candidate.drug or "").lower()
+            if counts[drug] >= per_drug_limit:
+                continue
+            counts[drug] += 1
+            limited.append(result)
+            if len(limited) >= total_cap:
+                break
+
+        return limited
 
 
 @dataclass
@@ -69,7 +91,9 @@ class SnippetExtractionPipeline:
         )
         for processor in self.post_processors:
             results = list(processor.process(results))
-        return self._apply_quota(results)
+        deduped = self._dedupe_results(results)
+        limited = self.config.apply_limits(deduped)
+        return limited
 
     def run(
         self,
@@ -99,23 +123,27 @@ class SnippetExtractionPipeline:
         )
         return [result.candidate for result in results]
 
-    def _apply_quota(self, results: Sequence[SnippetResult]) -> list[SnippetResult]:
+    def _dedupe_results(self, results: Sequence[SnippetResult]) -> list[SnippetResult]:
         if not results:
             return []
 
-        selected_candidates = self.config.apply_quota(
-            [result.candidate for result in results]
-        )
-        if len(selected_candidates) == len(results):
-            return list(results)
+        deduped: list[SnippetResult] = []
+        seen: dict[str, int] = {}
 
-        candidate_to_result = {id(result.candidate): result for result in results}
-        ordered: list[SnippetResult] = []
-        for candidate in selected_candidates:
-            mapped = candidate_to_result.get(id(candidate))
-            if mapped is not None:
-                ordered.append(mapped)
-        return ordered
+        for result in results:
+            key = _build_dedupe_key(result)
+
+            existing_index = seen.get(key)
+            if existing_index is None:
+                seen[key] = len(deduped)
+                deduped.append(result)
+                continue
+
+            existing = deduped[existing_index]
+            if _prefers_new_result(existing, result):
+                deduped[existing_index] = result
+
+        return deduped
 
 
 __all__ = [
@@ -123,3 +151,33 @@ __all__ = [
     "SnippetPipelineConfig",
     "SnippetPostProcessor",
 ]
+
+
+def _build_dedupe_key(result: SnippetResult) -> str:
+    signature = _normalize_snippet_signature(result.candidate.snippet_text)
+    drug = result.candidate.drug.lower()
+    return f"{drug}|{signature}" if signature else drug
+
+
+def _normalize_snippet_signature(value: str) -> str:
+    if not value:
+        return ""
+    return " ".join(value.lower().split())
+
+
+def _prefers_new_result(current: SnippetResult, challenger: SnippetResult) -> bool:
+    current_score = current.candidate.snippet_score
+    challenger_score = challenger.candidate.snippet_score
+    if challenger_score > current_score:
+        return True
+    if challenger_score < current_score:
+        return False
+
+    current_rank = current.candidate.article_rank
+    challenger_rank = challenger.candidate.article_rank
+    if challenger_rank < current_rank:
+        return True
+    if challenger_rank > current_rank:
+        return False
+
+    return challenger.candidate.article_score > current.candidate.article_score

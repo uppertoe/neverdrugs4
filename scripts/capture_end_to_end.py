@@ -18,6 +18,7 @@ from app.models import (
     ArticleArtefact,
     ProcessedClaim,
     ProcessedClaimSet,
+    ProcessedClaimSetVersion,
     SearchArtefact,
 )
 from app.services.full_text import FullTextSelectionPolicy, NIHFullTextFetcher, collect_pubmed_articles
@@ -130,10 +131,15 @@ def _collect_processed_claims_snapshot(session: Session, mesh_signature: str | N
         session.query(ProcessedClaimSet)
         .filter(ProcessedClaimSet.mesh_signature == mesh_signature)
         .options(
-            selectinload(ProcessedClaimSet.claims)
+            selectinload(ProcessedClaimSet.versions)
+            .selectinload(ProcessedClaimSetVersion.claims)
             .selectinload(ProcessedClaim.evidence)
         )
-        .options(selectinload(ProcessedClaimSet.claims).selectinload(ProcessedClaim.drug_links))
+        .options(
+            selectinload(ProcessedClaimSet.versions)
+            .selectinload(ProcessedClaimSetVersion.claims)
+            .selectinload(ProcessedClaim.drug_links)
+        )
         .one_or_none()
     )
 
@@ -141,7 +147,7 @@ def _collect_processed_claims_snapshot(session: Session, mesh_signature: str | N
         return []
 
     claims_payload: list[dict[str, object]] = []
-    for claim in claim_set.claims:
+    for claim in claim_set.get_active_claims():
         claims_payload.append(
             {
                 "claim_id": claim.claim_id,

@@ -8,10 +8,16 @@ from app.models import (
     ProcessedClaim,
     ProcessedClaimDrugLink,
     ProcessedClaimSet,
+    ProcessedClaimSetVersion,
     SearchArtefact,
     SearchTerm,
 )
-from app.services.processed_claims import InvalidClaimPayload, persist_processed_claims
+from app.services.processed_claims import (
+    InvalidClaimPayload,
+    _AggregatedClaim,
+    _compute_claim_group_id,
+    persist_processed_claims,
+)
 
 
 def _seed_search_term(session, mesh_signature: str) -> tuple[SearchTerm, SearchArtefact]:
@@ -173,8 +179,13 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
     assert stored_set.mesh_signature == mesh_signature
     assert stored_set.condition_label == "King Denborough syndrome"
 
-    assert len(stored_set.claims) == 1
-    stored_claim = stored_set.claims[0]
+    assert len(stored_set.versions) == 1
+    active_version = stored_set.versions[0]
+    assert active_version.status == "active"
+    assert active_version.version_number == 1
+
+    assert len(active_version.claims) == 1
+    stored_claim = active_version.claims[0]
     assert stored_claim.claim_id == "claim:succinylcholine-risk-duplicate"
     assert stored_claim.classification == "risk"
     assert stored_claim.confidence == "high"
@@ -187,6 +198,10 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
         "claim:succinylcholine-risk",
         "claim:succinylcholine-risk-duplicate",
     }
+    assert stored_claim.canonical_hash
+    assert stored_claim.claim_group_id
+    assert stored_claim.up_votes == 0
+    assert stored_claim.down_votes == 0
 
     evidence_ids = {entry.snippet_id for entry in stored_claim.evidence}
     assert evidence_ids == {str(snippet_one.id), str(snippet_two.id), "article:11111111"}
@@ -206,22 +221,37 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
     assert {link.claim_id for link in links} == {stored_claim.id}
 
 
-def test_persist_processed_claims_replaces_existing_set(session) -> None:
+def test_persist_processed_claims_creates_new_version_and_supersedes_previous(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
 
-    # Pre-create an old processed set with a different claim to ensure replacement occurs.
-    old_set = ProcessedClaimSet(mesh_signature=mesh_signature, condition_label="Old label")
+    old_set = ProcessedClaimSet(
+        mesh_signature=mesh_signature,
+        condition_label="Old label",
+        last_search_term_id=term.id,
+    )
+    old_version = ProcessedClaimSetVersion(
+        claim_set=old_set,
+        version_number=1,
+        status="active",
+        pipeline_metadata={"source": "test"},
+    )
     old_claim = ProcessedClaim(
+        claim_set=old_set,
+        claim_set_version=old_version,
         claim_id="old",
         classification="risk",
         summary="Outdated",
         confidence="low",
+        canonical_hash="hash-old",
+        claim_group_id="group-old",
         drugs=["old"],
         drug_classes=[],
         source_claim_ids=["old"],
         severe_reaction_flag=False,
         severe_reaction_terms=[],
+        up_votes=3,
+        down_votes=1,
     )
     old_set.claims.append(old_claim)
     session.add(old_set)
@@ -252,10 +282,98 @@ def test_persist_processed_claims_replaces_existing_set(session) -> None:
     refreshed_set = session.get(ProcessedClaimSet, claim_set.id)
     assert refreshed_set is not None
     assert refreshed_set.condition_label == "King Denborough syndrome"
-    assert len(refreshed_set.claims) == 1
-    assert refreshed_set.claims[0].claim_id == "claim:new"
-    # Old claim should be removed.
-    assert session.query(ProcessedClaim).filter(ProcessedClaim.claim_id == "old").count() == 0
+
+    assert {version.version_number for version in refreshed_set.versions} == {1, 2}
+    active_version = next(version for version in refreshed_set.versions if version.status == "active")
+    superseded_version = next(version for version in refreshed_set.versions if version.status == "superseded")
+
+    assert active_version.version_number == 2
+    assert active_version.claims[0].claim_id == "claim:new"
+    assert superseded_version.version_number == 1
+    assert superseded_version.claims[0].claim_id == "old"
+    assert superseded_version.claims[0].up_votes == 3
+    assert superseded_version.claims[0].down_votes == 1
+
+
+def test_persist_processed_claims_carries_vote_totals(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+
+    claim_set = ProcessedClaimSet(
+        mesh_signature=mesh_signature,
+        condition_label="Initial",
+        last_search_term_id=term.id,
+    )
+    first_version = ProcessedClaimSetVersion(
+        claim_set=claim_set,
+        version_number=1,
+        status="active",
+        pipeline_metadata={"step": "seed"},
+    )
+    legacy_group_id = _compute_claim_group_id(
+        _AggregatedClaim(
+            claim_id="legacy-claim",
+            classification="risk",
+            summary="Legacy summary",
+            confidence="medium",
+            drugs=["Succinylcholine"],
+            drug_classes=[
+                "Depolarising neuromuscular blocker",
+                "Neuromuscular blocker",
+            ],
+            severe_reaction_flag=True,
+            severe_reaction_terms=["Malignant hyperthermia"],
+        )
+    )
+
+    legacy_claim = ProcessedClaim(
+        claim_set=claim_set,
+        claim_set_version=first_version,
+        claim_id="legacy-claim",
+        classification="risk",
+        summary="Legacy summary",
+        confidence="medium",
+        canonical_hash="legacy-hash",
+        claim_group_id=legacy_group_id,
+        drugs=["Succinylcholine"],
+        drug_classes=[
+            "Depolarising neuromuscular blocker",
+            "Neuromuscular blocker",
+        ],
+        source_claim_ids=["legacy-claim"],
+        severe_reaction_flag=True,
+        severe_reaction_terms=["Malignant hyperthermia"],
+        up_votes=5,
+        down_votes=2,
+    )
+    session.add_all([claim_set, first_version, legacy_claim])
+    session.flush()
+
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="77777777")
+    payload = _single_claim_payload(
+        article=article,
+        snippet=snippet_one,
+        summary="New perspective on succinylcholine risk.",
+        descriptors=["Malignant hyperthermia"],
+    )
+
+    refreshed_set = _persist_payloads(
+        session,
+        mesh_signature=mesh_signature,
+        term=term,
+        payloads=[payload],
+    )
+
+    active_version = next(version for version in refreshed_set.versions if version.status == "active")
+    superseded_version = next(version for version in refreshed_set.versions if version.status == "superseded")
+
+    new_claim = active_version.claims[0]
+    old_claim = superseded_version.claims[0]
+
+    assert new_claim.claim_group_id == old_claim.claim_group_id
+    assert new_claim.canonical_hash != old_claim.canonical_hash
+    assert new_claim.up_votes == 5
+    assert new_claim.down_votes == 2
 
 
 def test_persist_processed_claims_rejects_empty_drug_array(session) -> None:

@@ -173,6 +173,53 @@ class ProcessedClaimSet(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    versions: Mapped[List["ProcessedClaimSetVersion"]] = relationship(
+        back_populates="claim_set",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    def get_active_version(self) -> ProcessedClaimSetVersion | None:
+        versions = list(getattr(self, "versions", []) or [])
+        if not versions:
+            return None
+
+        active_versions = [version for version in versions if version.status == "active"]
+        if active_versions:
+            return max(active_versions, key=lambda version: version.version_number)
+
+        return max(versions, key=lambda version: version.version_number)
+
+    def get_active_claims(self) -> List["ProcessedClaim"]:
+        active_version = self.get_active_version()
+        if active_version is None:
+            return []
+        return list(active_version.claims)
+
+
+class ProcessedClaimSetVersion(Base):
+    __tablename__ = "processed_claim_set_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claim_set_id: Mapped[int] = mapped_column(ForeignKey("processed_claim_sets.id"), index=True, nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    pipeline_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    claim_set: Mapped[ProcessedClaimSet] = relationship(back_populates="versions")
+    claims: Mapped[List["ProcessedClaim"]] = relationship(
+        back_populates="claim_set_version",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("claim_set_id", "version_number", name="uq_claimset_version_number"),
+    )
 
 
 class ProcessedClaim(Base):
@@ -180,15 +227,22 @@ class ProcessedClaim(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     claim_set_id: Mapped[int] = mapped_column(ForeignKey("processed_claim_sets.id"), index=True, nullable=False)
+    claim_set_version_id: Mapped[int] = mapped_column(
+        ForeignKey("processed_claim_set_versions.id"), index=True, nullable=False
+    )
     claim_id: Mapped[str] = mapped_column(String(128), nullable=False)
     classification: Mapped[str] = mapped_column(String(32), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    canonical_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    claim_group_id: Mapped[str] = mapped_column(String(128), nullable=False)
     drugs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     drug_classes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     source_claim_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     severe_reaction_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     severe_reaction_terms: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    up_votes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    down_votes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), nullable=False
     )
@@ -197,6 +251,7 @@ class ProcessedClaim(Base):
     )
 
     claim_set: Mapped[ProcessedClaimSet] = relationship(back_populates="claims")
+    claim_set_version: Mapped[ProcessedClaimSetVersion] = relationship(back_populates="claims")
     evidence: Mapped[List["ProcessedClaimEvidence"]] = relationship(
         back_populates="claim",
         cascade="all, delete-orphan",
@@ -206,6 +261,15 @@ class ProcessedClaim(Base):
         back_populates="claim",
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+    feedback: Mapped[List["ProcessedClaimFeedback"]] = relationship(
+        back_populates="claim",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("claim_set_version_id", "canonical_hash", name="uq_claim_version_hash"),
     )
 
 
@@ -248,6 +312,25 @@ class ProcessedClaimDrugLink(Base):
 
     __table_args__ = (
         UniqueConstraint("claim_id", "term", "term_kind", name="uq_claim_term_kind"),
+    )
+
+
+class ProcessedClaimFeedback(Base):
+    __tablename__ = "processed_claim_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claim_id: Mapped[int] = mapped_column(ForeignKey("processed_claims.id"), index=True, nullable=False)
+    client_token: Mapped[str] = mapped_column(String(128), nullable=False)
+    vote: Mapped[str] = mapped_column(String(8), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+
+    claim: Mapped[ProcessedClaim] = relationship(back_populates="feedback")
+
+    __table_args__ = (
+        UniqueConstraint("claim_id", "client_token", name="uq_feedback_claim_token"),
     )
 
 

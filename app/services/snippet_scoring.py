@@ -34,12 +34,12 @@ class SnippetScoringConfig:
 
 @dataclass(frozen=True)
 class SnippetQuotaConfig:
-    pmc_bonus_threshold: int = 10
-    pmc_high_bonus_threshold: int = 30
-    pmc_bonus_increment: int = 1
-    pmc_high_bonus_increment: int = 1
-    article_score_threshold: float = 4.0
-    article_score_increment: int = 1
+    pmc_bonus_threshold: int = 0
+    pmc_high_bonus_threshold: int = 0
+    pmc_bonus_increment: int = 0
+    pmc_high_bonus_increment: int = 0
+    article_score_threshold: float = 0.0
+    article_score_increment: int = 0
 
 
 DEFAULT_SCORING_CONFIG = SnippetScoringConfig()
@@ -229,11 +229,11 @@ def compute_quota_with_config(
     resolved = config or DEFAULT_QUOTA_CONFIG
     quota = base_quota
     cfg = resolved
-    if candidate.pmc_ref_count >= cfg.pmc_bonus_threshold:
+    if cfg.pmc_bonus_increment > 0 and candidate.pmc_ref_count >= cfg.pmc_bonus_threshold:
         quota += cfg.pmc_bonus_increment
-    if candidate.pmc_ref_count >= cfg.pmc_high_bonus_threshold:
+    if cfg.pmc_high_bonus_increment > 0 and candidate.pmc_ref_count >= cfg.pmc_high_bonus_threshold:
         quota += cfg.pmc_high_bonus_increment
-    if candidate.article_score >= cfg.article_score_threshold:
+    if cfg.article_score_increment > 0 and candidate.article_score >= cfg.article_score_threshold:
         quota += cfg.article_score_increment
     return min(max_quota, quota)
 

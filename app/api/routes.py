@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote
 
@@ -18,8 +20,10 @@ from app.models import (
     SearchTerm,
 )
 from app.job_queue import enqueue_claim_refresh
+from app.services.mesh_resolution import preview_mesh_resolution
 from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
-from app.services.search import compute_mesh_signature
+from app.services.query_terms import build_nih_search_query
+from app.services.search import MeshBuildResult, compute_mesh_signature, normalize_condition
 
 DEFAULT_REFRESH_STALE_SECONDS = 300
 DEFAULT_REFRESH_STALE_QUEUE_SECONDS = 60
@@ -51,12 +55,33 @@ def _load_search_term(session, ref: str) -> SearchTerm | None:
 
 
 def _serialise_claim_set(claim_set: ProcessedClaimSet) -> dict:
+    active_version = claim_set.get_active_version()
+    claims = []
+    if active_version is not None:
+        claims = [
+            _serialise_claim(claim)
+            for claim in sorted(active_version.claims, key=lambda c: c.id)
+        ]
+
     return {
         "id": claim_set.id,
         "slug": claim_set.slug,
         "mesh_signature": claim_set.mesh_signature,
         "condition_label": claim_set.condition_label,
-        "claims": [_serialise_claim(claim) for claim in sorted(claim_set.claims, key=lambda c: c.id)],
+        "active_version": None
+        if active_version is None
+        else {
+            "id": active_version.id,
+            "version_number": active_version.version_number,
+            "status": active_version.status,
+            "created_at": active_version.created_at.isoformat()
+            if active_version.created_at
+            else None,
+            "activated_at": active_version.activated_at.isoformat()
+            if active_version.activated_at
+            else None,
+        },
+        "claims": claims,
     }
 
 
@@ -177,7 +202,10 @@ def _refresh_empty_can_retry(refresh: ClaimSetRefresh) -> bool:
 
 
 def _claim_set_empty_can_retry(claim_set: ProcessedClaimSet | None) -> bool:
-    if not claim_set or claim_set.claims:
+    if not claim_set:
+        return False
+
+    if claim_set.get_active_claims():
         return False
 
     timestamp = claim_set.updated_at or claim_set.created_at
@@ -226,6 +254,54 @@ def _refresh_is_stale(refresh: ClaimSetRefresh) -> bool:
     age_seconds = (now - updated_at).total_seconds()
 
     return age_seconds >= threshold_seconds
+
+
+def _parse_mesh_terms(raw_terms) -> list[str]:
+    if raw_terms is None:
+        return []
+    if not isinstance(raw_terms, (list, tuple)):
+        raise ValueError("mesh_terms must be provided as a list of strings")
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_terms:
+        if not isinstance(raw, str):
+            raise ValueError("mesh_terms must be provided as a list of strings")
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        normalized = normalize_condition(cleaned)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(cleaned)
+
+    if not terms:
+        raise ValueError("mesh_terms must include at least one non-empty entry")
+    return terms
+
+
+def _manual_mesh_builder(selected_terms: list[str]):
+    payload_template = {
+        "manual_selection": True,
+        "selected_mesh_terms": list(selected_terms),
+    }
+
+    def _builder(_: str) -> MeshBuildResult:
+        payload = deepcopy(payload_template)
+        try:
+            query = build_nih_search_query(selected_terms)
+        except ValueError:
+            query = None
+        payload["esearch"] = {"query": query}
+        payload["ranked_mesh_terms"] = [{"term": term} for term in selected_terms]
+        return MeshBuildResult(
+            mesh_terms=list(selected_terms),
+            query_payload=payload,
+            source="manual-selection",
+        )
+
+    return _builder
 
 
 def _serialise_refresh_job(
@@ -300,8 +376,44 @@ def resolve_claims():
     if not condition:
         return jsonify({"detail": "Condition is required"}), 400
 
+    preview_result = None
+    manual_mesh_terms: list[str] = []
+    manual_builder = None
+    mesh_terms_supplied = "mesh_terms" in body
+    if mesh_terms_supplied:
+        try:
+            manual_mesh_terms = _parse_mesh_terms(body.get("mesh_terms"))
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 400
+        manual_builder = _manual_mesh_builder(manual_mesh_terms)
+    else:
+        preview_result = preview_mesh_resolution(condition)
+        if preview_result.status == "not_found":
+            return (
+                jsonify(
+                    {
+                        "detail": "No MeSH terms matched the supplied condition. Manual input is required.",
+                        "resolution_preview": asdict(preview_result),
+                    }
+                ),
+                422,
+            )
+        if preview_result.status == "needs_clarification":
+            return (
+                jsonify(
+                    {
+                        "detail": "Multiple MeSH terms matched the supplied condition. Clarification required.",
+                        "resolution_preview": asdict(preview_result),
+                    }
+                ),
+                409,
+            )
+
     try:
-        resolution = resolve_condition_via_nih(condition, session=session)
+        kwargs = {"session": session}
+        if manual_builder is not None:
+            kwargs["mesh_builder"] = manual_builder
+        resolution = resolve_condition_via_nih(condition, **kwargs)
     except MeshTermsNotFoundError as exc:
         return (
             jsonify(
@@ -317,7 +429,7 @@ def resolve_claims():
                 }
             ),
             422,
-        )
+    )
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
     claim_set: ProcessedClaimSet | None = None
     refresh_job: ClaimSetRefresh | None = None
@@ -333,7 +445,7 @@ def resolve_claims():
     refresh_url: str | None = None
     should_enqueue = False
     need_claim_set = claim_set is None
-    claim_set_empty = claim_set is not None and not claim_set.claims
+    claim_set_empty = claim_set is not None and not claim_set.get_active_claims()
     resolved_signature = mesh_signature or compute_mesh_signature(list(resolution.mesh_terms))
 
     if not mesh_signature:

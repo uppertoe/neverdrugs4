@@ -25,10 +25,7 @@ from app.services.snippet_pipeline import (
     SnippetPipelineConfig,
     SnippetPostProcessor,
 )
-from app.services.snippet_postprocessors import (
-    EnsureClassificationCoverage,
-    LimitPerDrugPostProcessor,
-)
+from app.services.snippet_postprocessors import LimitPerDrugPostProcessor
 from app.services.snippet_tuning import (
     SnippetArticleInput,
     generate_quota_grid,
@@ -36,9 +33,7 @@ from app.services.snippet_tuning import (
 )
 from app.services.snippets import ArticleSnippetExtractor, SnippetResult
 from app.services.snippet_scoring import (
-    DEFAULT_QUOTA_CONFIG,
     DEFAULT_SCORING_CONFIG,
-    SnippetQuotaConfig,
     SnippetScoringConfig,
 )
 from app.services.snippet_tags import DEFAULT_RISK_CUES, DEFAULT_SAFETY_CUES
@@ -252,38 +247,17 @@ def _build_scoring_config(args: argparse.Namespace) -> SnippetScoringConfig:
         condition_bonus=args.scoring_condition_bonus,
         condition_penalty=args.scoring_condition_penalty,
     )
-
-
-def _build_quota_config(args: argparse.Namespace) -> SnippetQuotaConfig:
-    return SnippetQuotaConfig(
-        pmc_bonus_threshold=args.quota_pmc_threshold,
-        pmc_high_bonus_threshold=args.quota_pmc_high_threshold,
-        pmc_bonus_increment=args.quota_pmc_bonus_increment,
-        pmc_high_bonus_increment=args.quota_pmc_high_bonus_increment,
-        article_score_threshold=args.quota_article_score_threshold,
-        article_score_increment=args.quota_article_score_increment,
-    )
-
-
 def _build_post_processors(
-    required_classes: Sequence[str],
     limit_per_drug: int,
     *,
     require_condition_match: bool,
     min_cue_count: int,
-    coverage_boost: float,
 ) -> list[SnippetPostProcessor]:
     processors: list[SnippetPostProcessor] = []
     if require_condition_match:
         processors.append(ConditionMatchFilter())
     if min_cue_count and min_cue_count > 1:
         processors.append(MinCueCountFilter(min_cue_count))
-    processors.append(
-        EnsureClassificationCoverage(
-            required_classifications=required_classes,
-            score_boost=coverage_boost,
-        )
-    )
     if limit_per_drug > 0:
         processors.append(LimitPerDrugPostProcessor(max_per_drug=limit_per_drug))
     return processors
@@ -334,7 +308,6 @@ def _run_fetch_pipeline(
     full_text_base: int | None,
     full_text_max: int | None,
     extractor: ArticleSnippetExtractor,
-    quota_config: SnippetQuotaConfig,
 ) -> None:
     settings = get_app_settings()
     article_settings = settings.article_selection
@@ -362,15 +335,16 @@ def _run_fetch_pipeline(
     searcher = NIHPubMedSearcher(retmax=resolved_pubmed_retmax)
     fetcher = NIHFullTextFetcher()
 
-    base_quota = max(1, fetch_base_quota)
-    max_quota = max(base_quota, fetch_max_quota)
+    per_drug_limit = max(1, fetch_base_quota)
+    total_cap = None
+    if fetch_max_quota and fetch_max_quota > 0:
+        total_cap = max(per_drug_limit, fetch_max_quota)
     pipeline = SnippetExtractionPipeline(
         extractor=extractor,
         post_processors=tuple(post_processors),
         config=SnippetPipelineConfig(
-            base_quota=base_quota,
-            max_quota=max_quota,
-            quota_config=quota_config,
+            per_drug_limit=per_drug_limit,
+            max_total_snippets=total_cap,
         ),
     )
 
@@ -405,7 +379,6 @@ def _ensure_articles_available(
     full_text_base: int | None,
     full_text_max: int | None,
     extractor: ArticleSnippetExtractor,
-    quota_config: SnippetQuotaConfig,
 ) -> tuple[SearchTerm, SearchResolution]:
     settings = get_app_settings()
     try:
@@ -445,7 +418,6 @@ def _ensure_articles_available(
             full_text_base=full_text_base,
             full_text_max=full_text_max,
             extractor=extractor,
-            quota_config=quota_config,
         )
         session.expire_all()
         search_term = session.get(SearchTerm, resolution.search_term_id)
@@ -458,11 +430,11 @@ def _ensure_articles_available(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Tune snippet pipeline quotas on live data.")
+    parser = argparse.ArgumentParser(description="Tune snippet pipeline limits on live data.")
     parser.add_argument("search_term", help="Canonical search term to evaluate (case-insensitive).")
     parser.add_argument("--max-articles", type=int, default=25, help="Maximum number of articles to load.")
-    parser.add_argument("--base-range", nargs="*", type=int, default=[2, 3, 4], help="Candidate base quota values.")
-    parser.add_argument("--max-range", nargs="*", type=int, default=[4, 5, 6, 7], help="Candidate max quota values.")
+    parser.add_argument("--base-range", nargs="*", type=int, default=[2, 3, 4], help="Candidate per-drug limits to evaluate.")
+    parser.add_argument("--max-range", nargs="*", type=int, default=[0, 6, 9, 12], help="Candidate total snippet caps (use 0 to allow auto cap).")
     parser.add_argument("--limit-per-drug", type=int, default=2, help="Post-processor cap per drug.")
     parser.add_argument("--score-weight", type=float, default=1.0, help="Weight for average snippet score.")
     parser.add_argument("--count-weight", type=float, default=0.1, help="Weight for snippet count.")
@@ -472,7 +444,6 @@ def main() -> None:
     parser.add_argument("--safety-weight", type=float, default=0.3, help="Weight for safety-class coverage.")
     parser.add_argument("--condition-match-weight", type=float, default=0.6, help="Weight for proportion of snippets matching the condition context.")
     parser.add_argument("--cue-weight", type=float, default=0.1, help="Weight for average cue count per snippet.")
-    parser.add_argument("--coverage-boost", type=float, default=0.05, help="Score boost applied when required classifications are present.")
     parser.add_argument(
         "--required-classes",
         nargs="*",
@@ -493,12 +464,6 @@ def main() -> None:
     parser.add_argument("--scoring-cue-weight", type=float, default=DEFAULT_SCORING_CONFIG.cue_weight, help="Per-cue weight added to snippet score.")
     parser.add_argument("--scoring-condition-bonus", type=float, default=DEFAULT_SCORING_CONFIG.condition_bonus, help="Bonus applied when snippet matches condition context.")
     parser.add_argument("--scoring-condition-penalty", type=float, default=DEFAULT_SCORING_CONFIG.condition_penalty, help="Penalty applied when condition context is missing.")
-    parser.add_argument("--quota-pmc-threshold", type=int, default=DEFAULT_QUOTA_CONFIG.pmc_bonus_threshold, help="PMC reference threshold for quota bonus.")
-    parser.add_argument("--quota-pmc-high-threshold", type=int, default=DEFAULT_QUOTA_CONFIG.pmc_high_bonus_threshold, help="High PMC reference threshold for additional quota bonus.")
-    parser.add_argument("--quota-pmc-bonus-increment", type=int, default=DEFAULT_QUOTA_CONFIG.pmc_bonus_increment, help="Quota increment applied at PMC threshold.")
-    parser.add_argument("--quota-pmc-high-bonus-increment", type=int, default=DEFAULT_QUOTA_CONFIG.pmc_high_bonus_increment, help="Quota increment applied at high PMC threshold.")
-    parser.add_argument("--quota-article-score-threshold", type=float, default=DEFAULT_QUOTA_CONFIG.article_score_threshold, help="Article score threshold for quota bonus.")
-    parser.add_argument("--quota-article-score-increment", type=int, default=DEFAULT_QUOTA_CONFIG.article_score_increment, help="Quota increment applied at article score threshold.")
     parser.add_argument("--top-configs", type=int, default=5, help="Number of top configs to display.")
     parser.add_argument("--preview", type=int, default=3, help="Snippets to show per article for best config.")
     parser.add_argument("--output", type=str, help="Optional path to write JSON preview output.")
@@ -545,34 +510,35 @@ def main() -> None:
         "--fetch-base-quota",
         type=int,
         default=None,
-        help="Base quota applied when persisting snippets during fetching.",
+        help="Per-drug limit applied when persisting snippets during fetching.",
     )
     parser.add_argument(
         "--fetch-max-quota",
         type=int,
         default=None,
-        help="Max quota applied when persisting snippets during fetching.",
+        help="Overall snippet cap applied during fetching (<=0 uses auto cap).",
     )
 
     args = parser.parse_args()
 
     scoring_config = _build_scoring_config(args)
-    quota_config = _build_quota_config(args)
     extractor = _build_extractor(args, scoring_config=scoring_config)
 
     post_processors = _build_post_processors(
-        args.required_classes,
         args.limit_per_drug,
         require_condition_match=args.require_condition_match,
         min_cue_count=args.min_cue_count,
-        coverage_boost=args.coverage_boost,
     )
     base_range = args.base_range or [3]
     max_range = args.max_range or [4]
     default_fetch_base = max(base_range)
     default_fetch_max = max(max_range + [default_fetch_base])
-    fetch_base_quota = args.fetch_base_quota or default_fetch_base
-    fetch_max_quota = args.fetch_max_quota or default_fetch_max
+    fetch_base_quota = (
+        args.fetch_base_quota if args.fetch_base_quota is not None else default_fetch_base
+    )
+    fetch_max_quota = (
+        args.fetch_max_quota if args.fetch_max_quota is not None else default_fetch_max
+    )
 
     SessionLocal = get_sessionmaker()
     with SessionLocal() as session:
@@ -589,7 +555,6 @@ def main() -> None:
             full_text_base=args.full_text_base,
             full_text_max=args.full_text_max,
             extractor=extractor,
-            quota_config=quota_config,
         )
 
         condition_terms = _build_condition_terms(session, search_term)
@@ -614,12 +579,11 @@ def main() -> None:
             raise SystemExit("No articles with full text available for tuning")
 
         configs = generate_quota_grid(
-            base_range=base_range,
-            max_range=max_range,
-            quota_config=quota_config,
+            per_drug_limits=base_range,
+            max_total_results=max_range,
         )
         if not configs:
-            raise SystemExit("No quota configurations generated; check --base-range/--max-range")
+            raise SystemExit("No pipeline configurations generated; check --base-range/--max-range")
 
         evaluator = _build_evaluator(
             weight_score=args.score_weight,
@@ -652,7 +616,7 @@ def main() -> None:
         print("Top configurations:")
         for result in top_configs:
             print(
-                f"  base_quota={result.config.base_quota:>2} max_quota={result.config.max_quota:>2} "
+                f"  per_drug_limit={result.config.per_drug_limit:>2} total_cap={result.config.max_total_snippets if result.config.max_total_snippets is not None else 'auto':>4} "
                 f"score={result.score:.4f}"
             )
 
@@ -686,8 +650,8 @@ def main() -> None:
                 json.dump({
                     "search_term": search_term.canonical,
                     "best_config": {
-                        "base_quota": best_config.base_quota,
-                        "max_quota": best_config.max_quota,
+                        "per_drug_limit": best_config.per_drug_limit,
+                        "max_total_snippets": best_config.max_total_snippets,
                     },
                     "preview": preview,
                 }, handle, indent=2)

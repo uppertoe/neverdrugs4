@@ -10,10 +10,7 @@ from .snippet_pipeline import (
     SnippetPipelineConfig,
     SnippetPostProcessor,
 )
-from .snippet_postprocessors import (
-    EnsureClassificationCoverage,
-    LimitPerDrugPostProcessor,
-)
+from .snippet_postprocessors import LimitPerDrugPostProcessor
 from .snippet_pruning import apply_article_quotas
 from .snippet_tuning import (
     SnippetArticleInput,
@@ -22,6 +19,7 @@ from .snippet_tuning import (
     grid_search_pipeline_configs,
 )
 from .mesh_builder import NIHMeshBuilder
+from .mesh_resolution import MeshResolutionPreview, preview_mesh_resolution
 from .nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from .nih_pubmed import NIHPubMedSearcher, PubMedArticle, PubMedSearchResult
 from .search import MeshBuildResult, SearchResolution, resolve_search_input
@@ -35,7 +33,6 @@ __all__ = [
     "SnippetExtractionPipeline",
     "SnippetPipelineConfig",
     "SnippetPostProcessor",
-    "EnsureClassificationCoverage",
     "LimitPerDrugPostProcessor",
     "MeshBuildResult",
     "PubMedArticle",
@@ -53,4 +50,6 @@ __all__ = [
     "MeshTermsNotFoundError",
     "resolve_condition_via_nih",
     "resolve_search_input",
+    "MeshResolutionPreview",
+    "preview_mesh_resolution",
 ]

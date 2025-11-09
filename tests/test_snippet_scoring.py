@@ -140,14 +140,37 @@ class _FakeCandidate:
 
 
 @pytest.mark.parametrize(
-    "candidate,expected",
+    "candidate",
     [
-        (_FakeCandidate(pmc_ref_count=5, article_score=2.0), 3),
-        (_FakeCandidate(pmc_ref_count=12, article_score=2.0), 4),
-        (_FakeCandidate(pmc_ref_count=32, article_score=3.5), 5),
-        (_FakeCandidate(pmc_ref_count=32, article_score=4.2), 6),
-        (_FakeCandidate(pmc_ref_count=75, article_score=5.0), 6),
+        _FakeCandidate(pmc_ref_count=5, article_score=2.0),
+        _FakeCandidate(pmc_ref_count=12, article_score=2.0),
+        _FakeCandidate(pmc_ref_count=32, article_score=3.5),
+        _FakeCandidate(pmc_ref_count=32, article_score=4.2),
+        _FakeCandidate(pmc_ref_count=75, article_score=5.0),
     ],
 )
-def test_compute_quota_respects_thresholds(candidate: _FakeCandidate, expected: int) -> None:
-    assert compute_quota(candidate, base_quota=3, max_quota=6) == expected
+def test_compute_quota_defaults_to_base(candidate: _FakeCandidate) -> None:
+    assert compute_quota(candidate, base_quota=3, max_quota=6) == 3
+
+
+def test_compute_quota_with_custom_config_applies_increments() -> None:
+    from app.services.snippet_scoring import SnippetQuotaConfig, compute_quota_with_config
+
+    candidate = _FakeCandidate(pmc_ref_count=35, article_score=4.5)
+    config = SnippetQuotaConfig(
+        pmc_bonus_threshold=10,
+        pmc_high_bonus_threshold=30,
+        pmc_bonus_increment=1,
+        pmc_high_bonus_increment=1,
+        article_score_threshold=4.0,
+        article_score_increment=1,
+    )
+
+    quota = compute_quota_with_config(
+        candidate,
+        base_quota=2,
+        max_quota=6,
+        config=config,
+    )
+
+    assert quota == 5

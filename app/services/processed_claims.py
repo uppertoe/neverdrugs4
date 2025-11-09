@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Iterable, Sequence
 
 from sqlalchemy import select
@@ -13,6 +16,7 @@ from app.models import (
     ProcessedClaimDrugLink,
     ProcessedClaimEvidence,
     ProcessedClaimSet,
+    ProcessedClaimSetVersion,
 )
 
 _CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
@@ -79,24 +83,77 @@ def persist_processed_claims(
     else:
         claim_set.condition_label = condition_label
         claim_set.last_search_term_id = search_term_id
-        if claim_set.claims:
-            claim_set.claims.clear()
-            session.flush()
+
+    session.flush([claim_set])
+
+    existing_versions = list(
+        session.execute(
+            select(ProcessedClaimSetVersion)
+            .where(ProcessedClaimSetVersion.claim_set_id == claim_set.id)
+            .order_by(ProcessedClaimSetVersion.version_number)
+        ).scalars()
+    )
+    next_version_number = (max((version.version_number for version in existing_versions), default=0) + 1)
+    new_version = ProcessedClaimSetVersion(
+        claim_set=claim_set,
+        version_number=next_version_number,
+        status="draft",
+        pipeline_metadata={
+            "payload_count": len(llm_payloads),
+            "claim_count": len(aggregated),
+        },
+    )
+    session.add(new_version)
+    session.flush([new_version])
+
+    active_versions = [version for version in existing_versions if version.status == "active"]
+    active_version_ids = [version.id for version in active_versions]
+    previous_active_claims: list[ProcessedClaim] = []
+    if active_version_ids:
+        previous_active_claims = list(
+            session.execute(
+                select(ProcessedClaim).where(ProcessedClaim.claim_set_version_id.in_(active_version_ids))
+            ).scalars()
+        )
+
+    canonical_lookup = {
+        claim.canonical_hash: claim for claim in previous_active_claims if claim.canonical_hash
+    }
+    vote_lookup: dict[str, tuple[int, int]] = {}
+    for claim in previous_active_claims:
+        vote_lookup.setdefault(claim.claim_group_id, (claim.up_votes, claim.down_votes))
 
     snippet_lookup = _load_snippets(session, aggregated)
 
     for aggregated_claim in aggregated.values():
+        canonical_hash = _compute_canonical_hash(aggregated_claim)
+        claim_group_id = _compute_claim_group_id(aggregated_claim)
+
+        previous_match = canonical_lookup.get(canonical_hash)
+        inherited_up = 0
+        inherited_down = 0
+        if previous_match is not None:
+            inherited_up = previous_match.up_votes
+            inherited_down = previous_match.down_votes
+        else:
+            inherited_up, inherited_down = vote_lookup.get(claim_group_id, (0, 0))
+
         stored_claim = ProcessedClaim(
             claim_set=claim_set,
+            claim_set_version=new_version,
             claim_id=aggregated_claim.claim_id,
             classification=aggregated_claim.classification,
             summary=aggregated_claim.summary,
             confidence=aggregated_claim.confidence,
+            canonical_hash=canonical_hash,
+            claim_group_id=claim_group_id,
             drugs=list(aggregated_claim.drugs),
             drug_classes=list(aggregated_claim.drug_classes),
             source_claim_ids=list(aggregated_claim.source_claim_ids),
             severe_reaction_flag=aggregated_claim.severe_reaction_flag,
             severe_reaction_terms=list(aggregated_claim.severe_reaction_terms),
+            up_votes=inherited_up,
+            down_votes=inherited_down,
         )
         session.add(stored_claim)
 
@@ -146,8 +203,59 @@ def persist_processed_claims(
                 )
             )
 
+    activation_time = datetime.now(timezone.utc)
+    new_version.status = "active"
+    new_version.activated_at = activation_time
+
+    for version in active_versions:
+        if version.id == new_version.id:
+            continue
+        version.status = "superseded"
+        if version.activated_at is None:
+            version.activated_at = activation_time
+
     session.flush()
     return claim_set
+
+
+def _compute_canonical_hash(claim: _AggregatedClaim) -> str:
+    evidence_payload = [
+        {
+            "snippet_id": evidence.snippet_id,
+            "pmid": evidence.pmid,
+            "article_title": evidence.article_title,
+            "key_points": list(evidence.key_points),
+            "notes": evidence.notes,
+        }
+        for evidence in sorted(claim.evidence.values(), key=lambda value: value.snippet_id)
+    ]
+
+    payload = {
+        "classification": claim.classification,
+        "summary": claim.summary,
+        "confidence": claim.confidence,
+        "drugs": sorted(_normalize_term_key(term) for term in claim.drugs),
+        "drug_classes": sorted(_normalize_term_key(term) for term in claim.drug_classes),
+        "source_claim_ids": sorted(claim.source_claim_ids),
+        "severe_reaction_flag": claim.severe_reaction_flag,
+        "severe_reaction_terms": sorted(_normalize_term_key(term) for term in claim.severe_reaction_terms),
+        "evidence": evidence_payload,
+    }
+    return _stable_hash(payload)
+
+
+def _compute_claim_group_id(claim: _AggregatedClaim) -> str:
+    payload = {
+        "classification": claim.classification,
+        "drugs": sorted(_normalize_term_key(term) for term in claim.drugs),
+        "drug_classes": sorted(_normalize_term_key(term) for term in claim.drug_classes),
+    }
+    return _stable_hash(payload)
+
+
+def _stable_hash(payload: object) -> str:
+    serialised = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
 
 
 def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _AggregatedClaim]":

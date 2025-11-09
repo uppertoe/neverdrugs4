@@ -113,7 +113,7 @@ def test_pruner_deduplicates_repeated_snippets() -> None:
     assert pruned[0].candidate.snippet_score == 2.0
 
 
-def test_apply_article_quotas_scales_with_article_weight() -> None:
+def test_apply_article_quotas_respects_base_quota() -> None:
     rich_candidates = [
         _make_candidate(
             pmid="39618072",
@@ -145,7 +145,7 @@ def test_apply_article_quotas_scales_with_article_weight() -> None:
     high_article_snippets = [candidate for candidate in selection if candidate.pmid == "39618072"]
     low_article_snippets = [candidate for candidate in selection if candidate.pmid == "15859443"]
 
-    assert len(high_article_snippets) == 5
+    assert len(high_article_snippets) == 3
     assert len(low_article_snippets) == 3
     low_scores = [candidate.snippet_score for candidate in low_article_snippets]
     assert low_scores == sorted(low_scores, reverse=True)

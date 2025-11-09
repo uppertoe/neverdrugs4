@@ -90,6 +90,71 @@ def test_mesh_builder_filters_disallowed_extra_tokens() -> None:
         assert all(banned not in term.lower() for term in result.mesh_terms)
 
 
+def test_mesh_builder_handles_docsum_v2_schema() -> None:
+    esearch_xml = """<?xml version='1.0' encoding='UTF-8'?>
+<eSearchResult>
+    <Count>5</Count>
+    <IdList>
+        <Id>68046350</Id>
+    </IdList>
+</eSearchResult>
+"""
+    esummary_v2 = """<?xml version='1.0' encoding='UTF-8'?>
+<eSummaryResult>
+    <DocumentSummarySet>
+        <DocumentSummary uid="68046350">
+            <DS_MeshTerms>
+                <DS_MeshTerm>Porphyria, Variegate</DS_MeshTerm>
+                <DS_MeshTerm>Variegate Porphyria</DS_MeshTerm>
+                <DS_MeshTerm>Porphyria Variegata</DS_MeshTerm>
+            </DS_MeshTerms>
+        </DocumentSummary>
+    </DocumentSummarySet>
+</eSummaryResult>
+"""
+    http_client = _SequentialHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_v2),
+    ])
+    builder = NIHMeshBuilder(http_client=http_client, max_terms=3)
+
+    result = builder("porphyria")
+
+    assert result.mesh_terms == [
+        "Porphyria, Variegate",
+        "Variegate Porphyria",
+        "Porphyria Variegata",
+    ]
+    assert http_client.calls[1][1]["version"] == "2.0"
+
+
+def test_mesh_builder_prefers_close_matches() -> None:
+    esearch_xml = (FIXTURES / "esearch_duchenne.xml").read_text(encoding="utf-8")
+    esummary_xml = (FIXTURES / "esummary_68020388.xml").read_text(encoding="utf-8")
+    http_client = _SequentialHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_xml),
+    ])
+    builder = NIHMeshBuilder(http_client=http_client, max_terms=6)
+
+    result = builder("duchenne muscular dystrophy")
+
+    assert result.mesh_terms[:4] == [
+        "Muscular Dystrophy, Duchenne",
+        "Duchenne Muscular Dystrophy",
+        "Duchenne-Type Progressive Muscular Dystrophy",
+        "Progressive Muscular Dystrophy, Duchenne Type",
+    ]
+    ranked_terms = result.query_payload["ranked_mesh_terms"]
+    becker_index = next(
+        idx for idx, entry in enumerate(ranked_terms) if entry["term"] == "Duchenne-Becker Muscular Dystrophy"
+    )
+    assert becker_index > 3
+    top_entry = ranked_terms[0]
+    assert top_entry["term"] == "Muscular Dystrophy, Duchenne"
+    assert top_entry["score"] >= 0.8
+
+
 def test_mesh_builder_includes_alias_terms_in_query() -> None:
     esearch_xml = """<?xml version='1.0' encoding='UTF-8'?>
 <eSearchResult>

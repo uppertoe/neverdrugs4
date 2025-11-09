@@ -66,15 +66,41 @@ class _DropDrugProcessor:
         return [result for result in results if result.candidate.drug != self.drug]
 
 
-def test_pipeline_applies_quota_per_article() -> None:
+def test_pipeline_limits_snippets_per_drug() -> None:
     results = [
-        _make_result(pmid="pmid-1", drug="succinylcholine", classification="risk", snippet_text="high risk", score=5.0),
-        _make_result(pmid="pmid-1", drug="propofol", classification="safety", snippet_text="moderate safety", score=2.0),
+        _make_result(
+            pmid="pmid-1",
+            drug="succinylcholine",
+            classification="risk",
+            snippet_text="succinylcholine primary",
+            score=5.0,
+        ),
+        _make_result(
+            pmid="pmid-2",
+            drug="succinylcholine",
+            classification="risk",
+            snippet_text="succinylcholine backup",
+            score=4.0,
+        ),
+        _make_result(
+            pmid="pmid-3",
+            drug="succinylcholine",
+            classification="risk",
+            snippet_text="succinylcholine extra",
+            score=1.0,
+        ),
+        _make_result(
+            pmid="pmid-4",
+            drug="propofol",
+            classification="safety",
+            snippet_text="propofol highlight",
+            score=4.5,
+        ),
     ]
     extractor = _DummyExtractor(results)
     pipeline = SnippetExtractionPipeline(
         extractor=extractor,
-        config=SnippetPipelineConfig(base_quota=1, max_quota=1),
+        config=SnippetPipelineConfig(per_drug_limit=2),
     )
 
     candidates = pipeline.run(
@@ -87,8 +113,12 @@ def test_pipeline_applies_quota_per_article() -> None:
         pmc_ref_count=20,
     )
 
-    assert len(candidates) == 1
-    assert candidates[0].drug == "succinylcholine"
+    assert len(candidates) == 3
+    assert {candidate.snippet_text for candidate in candidates} == {
+        "succinylcholine primary",
+        "succinylcholine backup",
+        "propofol highlight",
+    }
 
 
 def test_pipeline_invokes_post_processors() -> None:
@@ -101,7 +131,7 @@ def test_pipeline_invokes_post_processors() -> None:
     pipeline = SnippetExtractionPipeline(
         extractor=extractor,
         post_processors=(processor,),
-        config=SnippetPipelineConfig(base_quota=2, max_quota=2),
+        config=SnippetPipelineConfig(per_drug_limit=2),
     )
 
     candidates = pipeline.run(
@@ -118,11 +148,37 @@ def test_pipeline_invokes_post_processors() -> None:
     assert candidates[0].drug == "propofol"
 
 
+def test_pipeline_dedupes_identical_snippets_across_articles() -> None:
+    shared_text = "propofol caution"
+    results = [
+        _make_result(pmid="pmid-10", drug="propofol", classification="risk", snippet_text=shared_text, score=1.6),
+        _make_result(pmid="pmid-11", drug="propofol", classification="risk", snippet_text=shared_text, score=2.4),
+    ]
+    extractor = _DummyExtractor(results)
+    pipeline = SnippetExtractionPipeline(
+        extractor=extractor,
+        config=SnippetPipelineConfig(per_drug_limit=3),
+    )
+
+    candidates = pipeline.run(
+        article_text="",
+        pmid="pmid-1",
+        condition_terms=["muscular dystrophy"],
+        article_rank=1,
+        article_score=4.0,
+        preferred_url="https://example.org",
+        pmc_ref_count=20,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].pmid == "pmid-11"
+
+
 def test_pipeline_emits_severe_reaction_tags_from_fixture() -> None:
     article_text = Path("tests/fixtures/severe_reaction_article.txt").read_text(encoding="utf-8")
     pipeline = SnippetExtractionPipeline(
         extractor=ArticleSnippetExtractor(min_snippet_chars=40),
-        config=SnippetPipelineConfig(base_quota=5, max_quota=5),
+        config=SnippetPipelineConfig(per_drug_limit=5),
     )
 
     results = pipeline.run_results(

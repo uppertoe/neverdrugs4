@@ -9,7 +9,6 @@ from app.services.snippet_pipeline import (
     SnippetPostProcessor,
 )
 from app.services.snippets import ArticleSnippetExtractor, SnippetResult
-from app.services.snippet_scoring import SnippetQuotaConfig
 
 
 @dataclass(slots=True)
@@ -79,20 +78,20 @@ def grid_search_pipeline_configs(
 
 def generate_quota_grid(
     *,
-    base_range: Iterable[int],
-    max_range: Iterable[int],
-    quota_config: SnippetQuotaConfig | None = None,
+    per_drug_limits: Iterable[int],
+    max_total_results: Iterable[int | None] | None = None,
 ) -> list[SnippetPipelineConfig]:
     configs: list[SnippetPipelineConfig] = []
-    for base_quota in base_range:
-        for max_quota in max_range:
-            if max_quota < base_quota:
-                continue
+    totals = list(max_total_results or (None,))
+    for per_drug_limit in per_drug_limits:
+        if per_drug_limit <= 0:
+            continue
+        for total_cap in totals:
+            normalized_cap = total_cap if (total_cap is None or total_cap > 0) else None
             configs.append(
                 SnippetPipelineConfig(
-                    base_quota=base_quota,
-                    max_quota=max_quota,
-                    quota_config=quota_config,
+                    per_drug_limit=per_drug_limit,
+                    max_total_snippets=normalized_cap,
                 )
             )
     return configs

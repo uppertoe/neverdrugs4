@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import quote
@@ -15,11 +16,28 @@ from app.models import (
     ProcessedClaimDrugLink,
     ProcessedClaimEvidence,
     ProcessedClaimSet,
+    ProcessedClaimSetVersion,
     SearchArtefact,
     SearchTerm,
 )
+from app.services.mesh_resolution import MeshResolutionPreview
 from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution, compute_mesh_signature
+
+
+@pytest.fixture(autouse=True)
+def stub_preview_mesh_resolution():
+    preview = MeshResolutionPreview(
+        status="resolved",
+        raw_query="duchenne",
+        normalized_query="duchenne",
+        mesh_terms=["Duchenne Muscular Dystrophy"],
+        ranked_options=["Duchenne Muscular Dystrophy"],
+        suggestions=[],
+        espell_correction=None,
+    )
+    with patch("app.api.routes.preview_mesh_resolution", return_value=preview) as mock:
+        yield mock
 
 
 def _seed_processed_claim_set(
@@ -36,17 +54,31 @@ def _seed_processed_claim_set(
     session.flush()
     session.refresh(claim_set)
 
+    version = ProcessedClaimSetVersion(
+        claim_set=claim_set,
+        version_number=1,
+        status="active",
+        pipeline_metadata={},
+    )
+    session.add(version)
+    session.flush()
+
     claim = ProcessedClaim(
         claim_set_id=claim_set.id,
+        claim_set_version=version,
         claim_id="risk:succinylcholine",
         classification="risk",
         summary="Succinylcholine precipitates malignant hyperthermia.",
         confidence="high",
+        canonical_hash="hash-risk:succinylcholine",
+        claim_group_id="group-risk:succinylcholine",
         drugs=["succinylcholine"],
         drug_classes=["depolarising neuromuscular blocker"],
         source_claim_ids=["risk:succinylcholine"],
         severe_reaction_flag=True,
         severe_reaction_terms=["cardiac arrest"],
+        up_votes=0,
+        down_votes=0,
     )
     session.add(claim)
     session.flush()
@@ -311,6 +343,126 @@ def test_resolve_claims_returns_suggestions_when_mesh_missing(
     }
     assert payload["suggested_mesh_terms"] == ["Alpha Condition", "Beta Disorder"]
     resolve_mock.assert_called_once()
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+def test_resolve_claims_requests_clarification_when_preview_ambiguous(
+    resolve_mock,
+    client,
+    stub_preview_mesh_resolution,
+):
+    stub_preview_mesh_resolution.return_value = MeshResolutionPreview(
+        status="needs_clarification",
+        raw_query="Porphyria",
+        normalized_query="porphyria",
+        mesh_terms=["Acute Intermittent Porphyria", "Porphyria, Variegate"],
+        ranked_options=["Acute Intermittent Porphyria", "Porphyria, Variegate"],
+        suggestions=[],
+        espell_correction=None,
+    )
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Porphyria"},
+    )
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["detail"].startswith("Multiple MeSH terms")
+    assert payload["resolution_preview"]["status"] == "needs_clarification"
+    assert payload["resolution_preview"]["mesh_terms"] == [
+        "Acute Intermittent Porphyria",
+        "Porphyria, Variegate",
+    ]
+    resolve_mock.assert_not_called()
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+def test_resolve_claims_returns_preview_when_not_found(
+    resolve_mock,
+    client,
+    stub_preview_mesh_resolution,
+):
+    stub_preview_mesh_resolution.return_value = MeshResolutionPreview(
+        status="not_found",
+        raw_query="Porphyria",
+        normalized_query="porphyria",
+        mesh_terms=[],
+        ranked_options=["Porphyria Variegata"],
+        suggestions=["Porphyria Variegata", "Porphyria Cutanea Tarda"],
+        espell_correction=None,
+    )
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Porphyria"},
+    )
+
+    assert response.status_code == 422
+    payload = response.get_json()
+    assert payload["detail"].startswith("No MeSH terms matched")
+    assert payload["resolution_preview"]["status"] == "not_found"
+    assert payload["resolution_preview"]["suggestions"] == [
+        "Porphyria Variegata",
+        "Porphyria Cutanea Tarda",
+    ]
+    assert payload["resolution_preview"]["ranked_options"] == ["Porphyria Variegata"]
+    resolve_mock.assert_not_called()
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+@patch("app.api.routes.enqueue_claim_pipeline")
+def test_resolve_claims_accepts_manual_mesh_terms(
+    enqueue_mock,
+    resolve_mock,
+    client,
+    stub_preview_mesh_resolution,
+):
+    stub_preview_mesh_resolution.reset_mock()
+    resolution = SearchResolution(
+        normalized_condition="porphyria",
+        mesh_terms=["Porphyria Variegata"],
+        reused_cached=False,
+        search_term_id=55,
+    )
+    resolve_mock.return_value = resolution
+    enqueue_mock.return_value = {"job_id": "task-42", "status": "queued"}
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={
+            "condition": "Porphyria",
+            "mesh_terms": ["Porphyria Variegata"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert stub_preview_mesh_resolution.call_count == 0
+    builder = resolve_mock.call_args.kwargs["mesh_builder"]
+    assert builder is not None
+    manual_result = builder("porphyria")
+    assert manual_result.mesh_terms == ["Porphyria Variegata"]
+    assert manual_result.query_payload["manual_selection"] is True
+    assert manual_result.query_payload["selected_mesh_terms"] == ["Porphyria Variegata"]
+    assert manual_result.query_payload["esearch"]["query"]
+    enqueue_mock.assert_called_once()
+
+
+def test_resolve_claims_validates_mesh_terms_input(client, stub_preview_mesh_resolution):
+    stub_preview_mesh_resolution.reset_mock()
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={
+            "condition": "Porphyria",
+            "mesh_terms": "Porphyria Variegata",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["detail"].startswith("mesh_terms")
+    assert stub_preview_mesh_resolution.call_count == 0
 
 
 @patch("app.api.routes.resolve_condition_via_nih")

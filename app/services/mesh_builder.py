@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Optional, Tuple
 from xml.etree import ElementTree
 
@@ -14,7 +15,6 @@ from app.services.query_terms import build_nih_search_query
 _TOKEN_TRANSLATION = str.maketrans({ch: " " for ch in "-,/"})
 
 DEFAULT_DISALLOWED_EXTRA_TOKENS: tuple[str, ...] = (
-    "becker",
     "mouse",
     "mice",
     "murine",
@@ -63,7 +63,7 @@ class NIHMeshBuilder:
         retmax: int = 5,
         timeout_seconds: float = 5.0,
         max_terms: int = 5,
-    disallowed_extra_tokens: Optional[set[str]] = None,
+        disallowed_extra_tokens: Optional[set[str]] = None,
         require_primary_token: bool = True,
     ) -> None:
         self._http_client = http_client
@@ -146,13 +146,33 @@ class NIHMeshBuilder:
         params = {
             "db": self.database,
             "id": mesh_id,
+            "version": "2.0",
         }
         response = self._dispatch_request("esummary.fcgi", params)
         root = self._parse_xml(response.text)
 
-        mesh_terms = [node.text.strip() for node in root.findall('.//Item[@Name="DS_MeshTerms"]/Item') if node.text]
+        mesh_terms = self._extract_mesh_terms(root)
 
         return ESummaryResult(mesh_terms=mesh_terms, raw_xml=response.text)
+
+    def _extract_mesh_terms(self, root: ElementTree.Element) -> list[str]:
+        error_node = root.find(".//ERROR")
+        if error_node is not None:
+            return []
+
+        terms = [
+            node.text.strip()
+            for node in root.findall('.//Item[@Name="DS_MeshTerms"]/Item')
+            if node.text and node.text.strip()
+        ]
+        if terms:
+            return terms
+
+        return [
+            node.text.strip()
+            for node in root.findall(".//DS_MeshTerms//DS_MeshTerm")
+            if node.text and node.text.strip()
+        ]
 
     def _dispatch_request(self, endpoint: str, params: dict[str, str]) -> httpx.Response:
         url = f"{self.base_url}/{endpoint}"
@@ -185,6 +205,9 @@ class NIHMeshBuilder:
         query_tokens = set(query_token_list)
         alias_tokens = set(alias_tokens or set())
         primary_token = query_token_list[0] if query_token_list else None
+        ordered_query = " ".join(query_token_list)
+        sorted_query = " ".join(sorted(query_token_list))
+
         for index, term in enumerate(candidates):
             term_norm = normalize_condition(term)
             term_token_list = _tokenize_for_mesh(term_norm)
@@ -206,6 +229,20 @@ class NIHMeshBuilder:
                 overlap = base_overlap
             if has_primary_token and jaccard < 1.0:
                 jaccard = min(1.0, jaccard + 0.2)
+            extra_tokens_set = tokens - query_tokens
+            ordered_term = " ".join(term_token_list)
+            sorted_term = " ".join(sorted(term_token_list))
+            similarity = max(
+                SequenceMatcher(None, ordered_query, ordered_term).ratio(),
+                SequenceMatcher(None, sorted_query, sorted_term).ratio(),
+            )
+            score = (jaccard * 0.7) + (similarity * 0.3)
+            generic_extra = extra_tokens_set & _GENERIC_ALIAS_TOKENS
+            non_generic_extra = extra_tokens_set - _GENERIC_ALIAS_TOKENS
+            if generic_extra and not non_generic_extra:
+                score += 0.02
+            if "becker" in tokens and "becker" not in query_tokens:
+                score -= 0.2
             ranked.append(
                 _RankedTerm(
                     term=term,
@@ -214,13 +251,15 @@ class NIHMeshBuilder:
                     token_sequence=tuple(term_token_list),
                     overlap=overlap,
                     jaccard=jaccard,
+                    similarity=similarity,
+                    score=score,
                     alias_overlap=alias_overlap,
                     has_primary_token=has_primary_token,
                     index=index,
-                    extra_tokens=sorted(tokens - query_tokens),
+                    extra_tokens=sorted(extra_tokens_set),
                 )
             )
-        ranked.sort(key=lambda entry: (-entry.jaccard, entry.index))
+        ranked.sort(key=lambda entry: (-entry.score, entry.index))
         return ranked, query_tokens, primary_token
 
     def _select_terms(
@@ -315,6 +354,8 @@ class _RankedTerm:
     token_sequence: tuple[str, ...]
     overlap: int
     jaccard: float
+    similarity: float
+    score: float
     alias_overlap: int
     has_primary_token: bool
     index: int
@@ -326,6 +367,8 @@ class _RankedTerm:
             "normalized": self.normalized,
             "overlap": self.overlap,
             "jaccard": round(self.jaccard, 4),
+            "similarity": round(self.similarity, 4),
+            "score": round(self.score, 4),
             "alias_overlap": self.alias_overlap,
             "has_primary_token": self.has_primary_token,
             "rank": self.index,
