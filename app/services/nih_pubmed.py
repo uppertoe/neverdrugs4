@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
 from xml.etree import ElementTree
@@ -7,9 +8,10 @@ from xml.etree import ElementTree
 import httpx
 
 from app.services.mesh_builder import NIHMeshBuilder
+from app.services.nih_http import dispatch_nih_request
 from app.services.query_terms import ConditionTermExpansion, ConditionTermExpander, build_nih_search_query
 from app.services.search import normalize_condition
-from app.settings import DEFAULT_PUBMED_RETMAX
+from app.settings import DEFAULT_NIH_API_KEY, DEFAULT_NIH_CONTACT_EMAIL, DEFAULT_PUBMED_RETMAX
 
 DEFAULT_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -106,7 +108,27 @@ class MeshBuilderTermExpander:
             mesh_terms=(descriptor,),
             alias_terms=tuple(alias_terms),
         )
-        self._cache[normalized] = expansion
+        keys_to_cache = {normalized}
+        descriptor_key = normalize_condition(descriptor) if descriptor else None
+        if descriptor_key:
+            keys_to_cache.add(descriptor_key)
+
+        for alias in alias_terms:
+            alias_key = normalize_condition(alias)
+            if alias_key:
+                keys_to_cache.add(alias_key)
+
+        for candidate in getattr(build_result, "mesh_terms", []) or []:
+            candidate_key = normalize_condition(candidate)
+            if candidate_key:
+                keys_to_cache.add(candidate_key)
+
+        keys_to_cache.add(normalize_condition(term))
+
+        for key in keys_to_cache:
+            if key and key not in self._cache:
+                self._cache[key] = expansion
+
         return expansion
 
 
@@ -120,6 +142,8 @@ class NIHPubMedSearcher:
         retmax: int = DEFAULT_RETMAX,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         condition_term_expander: ConditionTermExpander | None = None,
+        contact_email: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._http_client = http_client
         self.base_url = base_url.rstrip("/")
@@ -127,6 +151,10 @@ class NIHPubMedSearcher:
         self.retmax = retmax
         self.timeout_seconds = timeout_seconds
         self._condition_term_expander = condition_term_expander or MeshBuilderTermExpander()
+        resolved_email = contact_email or os.getenv("NIH_CONTACT_EMAIL") or DEFAULT_NIH_CONTACT_EMAIL
+        self.contact_email = resolved_email.strip() if resolved_email and resolved_email.strip() else None
+        resolved_key = api_key or os.getenv("NIH_API_KEY") or os.getenv("NCBI_API_KEY") or DEFAULT_NIH_API_KEY
+        self.api_key = resolved_key.strip() if resolved_key and resolved_key.strip() else None
 
     def __call__(
         self,
@@ -192,17 +220,16 @@ class NIHPubMedSearcher:
         )
 
     def _post(self, endpoint: str, data: dict[str, str]) -> httpx.Response:
-        url = f"{self.base_url}/{endpoint}"
-        if self._http_client is not None:
-            response = self._http_client.post(url, data=data)
-        else:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.post(url, data=data)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"NIH request failed with status {response.status_code} for {endpoint}"
-            )
-        return response
+        return dispatch_nih_request(
+            http_client=self._http_client,
+            method="post",
+            base_url=self.base_url,
+            endpoint=endpoint,
+            data=data,
+            contact_email=self.contact_email,
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
 
 
 def _parse_esearch_ids(xml_payload: str) -> list[str]:

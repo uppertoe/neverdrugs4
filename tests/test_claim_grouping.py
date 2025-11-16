@@ -132,15 +132,18 @@ def test_group_snippets_separates_depolarising_and_non_depolarising_blockers() -
 
     assert len(groups) == 2
     depolarising = next(group for group in groups if "depolarising" in group.drug_label)
-    non_depolarising = next(group for group in groups if "non-depolarising" in group.drug_label)
+    aminosteroid = next(group for group in groups if "aminosteroid" in group.drug_label)
 
     assert depolarising.drug_label == "depolarising neuromuscular blockers"
     assert set(depolarising.drug_terms) == {"succinylcholine"}
     assert set(depolarising.drug_classes) == {"depolarising neuromuscular blocker"}
 
-    assert non_depolarising.drug_label == "non-depolarising neuromuscular blockers"
-    assert set(non_depolarising.drug_terms) == {"rocuronium"}
-    assert set(non_depolarising.drug_classes) == {"non-depolarising neuromuscular blocker"}
+    assert aminosteroid.drug_label == "aminosteroid neuromuscular blockers"
+    assert set(aminosteroid.drug_terms) == {"rocuronium"}
+    assert set(aminosteroid.drug_classes) == {
+        "neuromuscular blocker (aminosteroid)",
+        "neuromuscular blocker (non-depolarising)",
+    }
 
 
 def test_group_snippets_flags_generic_class_groups() -> None:

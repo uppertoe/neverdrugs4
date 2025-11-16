@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.models import ClaimSetRefresh
 from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution
-from app.tasks import refresh_claims_for_condition
+from app.tasks import PROGRESS_DESCRIPTIONS, refresh_claims_for_condition
 
 
 @pytest.fixture()
@@ -225,6 +225,7 @@ def test_refresh_claims_skips_when_mesh_terms_missing(
         assert refresh.status == "skipped"
         assert refresh.progress_state == "skipped"
         assert refresh.progress_payload == {
+            "description": PROGRESS_DESCRIPTIONS["skipped"],
             "reason": "missing_mesh_terms",
             "suggestions": ["foo", "bar"],
         }

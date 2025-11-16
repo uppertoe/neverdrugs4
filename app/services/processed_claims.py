@@ -22,6 +22,11 @@ from app.models import (
 _CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 _CLAIM_TYPES = {"risk", "safety", "uncertain", "nuanced"}
 
+_CLASS_CANONICAL_MAP = {
+    "aminosteroid neuromuscular blocker": "neuromuscular blocker (aminosteroid)",
+    "benzylisoquinolinium neuromuscular blocker": "neuromuscular blocker (benzylisoquinolinium)",
+}
+
 
 class InvalidClaimPayload(ValueError):
     """Raised when the LLM payload violates the enforced claim schema."""
@@ -65,7 +70,7 @@ def persist_processed_claims(
     condition_label: str,
     llm_payloads: Sequence[object],
 ) -> ProcessedClaimSet:
-    aggregated = _aggregate_claims(llm_payloads)
+    aggregated, warnings = _aggregate_claims(llm_payloads)
 
     claim_set = (
         session.execute(
@@ -93,15 +98,22 @@ def persist_processed_claims(
             .order_by(ProcessedClaimSetVersion.version_number)
         ).scalars()
     )
-    next_version_number = (max((version.version_number for version in existing_versions), default=0) + 1)
+    next_version_number = max((version.version_number for version in existing_versions), default=0) + 1
+
+    pipeline_metadata: dict[str, object] = {
+        "payload_count": len(llm_payloads),
+        "claim_count": len(aggregated),
+        "schema_warnings": list(warnings),
+    }
+    if warnings:
+        pipeline_metadata["warning_count"] = len(warnings)
+        pipeline_metadata["warnings"] = warnings
+
     new_version = ProcessedClaimSetVersion(
         claim_set=claim_set,
         version_number=next_version_number,
         status="draft",
-        pipeline_metadata={
-            "payload_count": len(llm_payloads),
-            "claim_count": len(aggregated),
-        },
+        pipeline_metadata=pipeline_metadata,
     )
     session.add(new_version)
     session.flush([new_version])
@@ -258,8 +270,11 @@ def _stable_hash(payload: object) -> str:
     return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
 
 
-def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _AggregatedClaim]":
+def _aggregate_claims(
+    llm_payloads: Sequence[object],
+) -> tuple["OrderedDict[str, _AggregatedClaim]", list[dict[str, str]]]:
     aggregated: "OrderedDict[str, _AggregatedClaim]" = OrderedDict()
+    warnings: list[dict[str, str]] = []
 
     for payload in llm_payloads:
         data = _coerce_payload(payload)
@@ -310,16 +325,25 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                 raise InvalidClaimPayload("LLM claim payload did not resolve any drug terms")
 
             if claim_id not in claim_to_drugs:
-                raise InvalidClaimPayload(
-                    f"Claim '{claim_id}' is not declared in the top-level drugs claims list"
+                warnings.append(
+                    {
+                        "code": "claim-missing-drug-declaration",
+                        "claim_id": claim_id,
+                    }
                 )
+                claim_to_drugs[claim_id] = set()
 
             declared_drugs = claim_to_drugs[claim_id]
             for canonical_id in canonical_drug_ids:
                 if canonical_id not in declared_drugs:
-                    raise InvalidClaimPayload(
-                        f"Claim '{claim_id}' references drug '{canonical_id}' without declaration"
+                    warnings.append(
+                        {
+                            "code": "claim-missing-drug-reference",
+                            "claim_id": claim_id,
+                            "drug_id": canonical_id,
+                        }
                     )
+                    declared_drugs.add(canonical_id)
 
             declared_claim_ids.discard(claim_id)
             key = _build_claim_key(classification, drugs, drug_classes)
@@ -403,6 +427,9 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                         key_points=key_points,
                         notes=_clean_str(evidence.get("notes")),
                     )
+                else:
+                    existing_evidence = aggregated_claim.evidence[snippet_id]
+                    _merge_evidence(existing_evidence, pmid, article_title, key_points, evidence)
 
             if "articles" not in claim or claim.get("articles") is None:
                 raise InvalidClaimPayload("LLM claim payload missing required field 'articles'")
@@ -422,12 +449,37 @@ def _aggregate_claims(llm_payloads: Sequence[object]) -> "OrderedDict[str, _Aggr
                     )
 
         if declared_claim_ids:
-            missing = sorted(declared_claim_ids)
-            raise InvalidClaimPayload(
-                "Drug metadata declares claims without payload entries: " + ", ".join(missing)
-            )
+            for missing_claim_id in sorted(declared_claim_ids):
+                warnings.append(
+                    {
+                        "code": "orphaned-drug-claim-declaration",
+                        "claim_id": missing_claim_id,
+                    }
+                )
 
-    return _reduce_redundant_claims(aggregated)
+    reduced = _reduce_redundant_claims(aggregated)
+    return reduced, warnings
+
+
+def _merge_evidence(
+    existing: _AggregatedEvidence,
+    pmid: str | None,
+    article_title: str | None,
+    key_points: list[str],
+    raw_evidence: dict,
+) -> None:
+    # Preserve best metadata while folding in newly discovered details.
+    if pmid and not existing.pmid:
+        existing.pmid = pmid
+    if article_title and not existing.article_title:
+        existing.article_title = article_title
+    seen = {point for point in existing.key_points}
+    for point in key_points:
+        if point not in seen:
+            existing.key_points.append(point)
+            seen.add(point)
+    if existing.notes is None:
+        existing.notes = _clean_str(raw_evidence.get("notes"))
 
 
 def _parse_severe_reaction(value: dict) -> tuple[bool, list[str]]:
@@ -611,11 +663,18 @@ def _normalise_claim_terms(
 
     for term in raw_classes:
         cleaned = _clean_str(term)
-        if cleaned:
-            class_terms.append(cleaned)
+        if not cleaned:
+            continue
+        canonical = _CLASS_CANONICAL_MAP.get(_normalize_term_key(cleaned))
+        class_terms.append(canonical or cleaned)
+
+    class_terms = _unique_terms(class_terms)
+    specific_classes = [term for term in class_terms if not _is_generic_class_term(term)]
+    if specific_classes:
+        class_terms = specific_classes
 
     unique_canonical = list(dict.fromkeys(canonical_ids))
-    return _unique_terms(drug_terms), _unique_terms(class_terms), unique_canonical
+    return _unique_terms(drug_terms), class_terms, unique_canonical
 
 
 def _build_drug_catalog(entries: object) -> tuple[dict[str, _DrugCatalogEntry], dict[str, set[str]]]:
@@ -668,12 +727,15 @@ def _build_drug_catalog(entries: object) -> tuple[dict[str, _DrugCatalogEntry], 
         for class_term in item.get("classifications") or []:
             cleaned_class = _clean_str(class_term)
             if cleaned_class:
-                class_values.append(cleaned_class)
+                canonical_class = _CLASS_CANONICAL_MAP.get(_normalize_term_key(cleaned_class))
+                class_values.append(canonical_class or cleaned_class)
 
-        entry = _DrugCatalogEntry(drug_id=raw_id, name=name, classes=tuple(class_values))
+        entry = _DrugCatalogEntry(
+            drug_id=raw_id,
+            name=name,
+            classes=tuple(_unique_terms(class_values)),
+        )
         catalog[raw_id] = entry
-
-    
 
     return catalog, claim_to_drugs
 
@@ -735,7 +797,6 @@ _GENERIC_SINGLE_WORDS = {
     "agents",
     "class",
     "drug",
-    "drugs",
     "therapy",
     "treatment",
     "use",
@@ -743,7 +804,6 @@ _GENERIC_SINGLE_WORDS = {
     "volatile",
     "neuromuscular",
     "anesthetic",
-    "anesthetics",
 }
 
 _GENERIC_KEYWORDS = {
@@ -760,6 +820,7 @@ _GENERIC_KEYWORDS = {
     "blocking",
     "relaxant",
     "relaxants",
+    "neuromuscular",
     "anesthetic",
     "anesthetics",
     "anaesthetic",
@@ -791,7 +852,7 @@ def _is_generic_class_term(term: str) -> bool:
     tokens = slug.split()
     if len(tokens) == 1:
         return slug in _GENERIC_SINGLE_WORDS
-    return any(token in _GENERIC_KEYWORDS for token in tokens)
+    return all(token in _GENERIC_KEYWORDS for token in tokens)
 
 
 _TOKEN_NORMALISER = {
@@ -804,7 +865,7 @@ _TOKEN_NORMALISER = {
     "anaesthetics": "anesthetic",
 }
 
-_GENERIC_TOKEN_SKIP = {
+GENERIC_TOKEN_SKIP = {
     "agent",
     "agents",
     "class",
@@ -849,7 +910,7 @@ def _claim_term_tokens(claim: _AggregatedClaim) -> set[str]:
             tokens.add(slug)
         for raw in slug.split():
             token = _normalize_token(raw)
-            if token and token not in _GENERIC_TOKEN_SKIP:
+            if token and token not in GENERIC_TOKEN_SKIP:
                 tokens.add(token)
     return tokens
 

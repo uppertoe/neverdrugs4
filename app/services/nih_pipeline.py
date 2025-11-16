@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
+import threading
 from collections import defaultdict
 from time import perf_counter
-from typing import Dict, Tuple
+from typing import Dict, Tuple, cast
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.services.espell import NIHESpellClient
@@ -35,6 +38,84 @@ class MeshTermsNotFoundError(RuntimeError):
 
 logger = logging.getLogger(__name__)
 
+_SHARED_HTTP_CLIENTS: dict[str, httpx.Client] = {}
+_DEFAULT_COMPONENTS: dict[str, object] = {}
+_CLIENT_LOCK = threading.Lock()
+
+
+def _get_shared_http_client(key: str, *, timeout: float) -> httpx.Client:
+    with _CLIENT_LOCK:
+        client = _SHARED_HTTP_CLIENTS.get(key)
+        if client is None or client.is_closed:
+            client = httpx.Client(timeout=timeout)
+            _SHARED_HTTP_CLIENTS[key] = client
+        return client
+
+
+def _get_default_mesh_builder() -> NIHMeshBuilder:
+    builder = _DEFAULT_COMPONENTS.get("mesh_builder")
+    if builder is None:
+        http_client = _get_shared_http_client("mesh_builder", timeout=5.0)
+        settings = get_app_settings()
+        builder = NIHMeshBuilder(
+            http_client=http_client,
+            contact_email=settings.nih_contact_email,
+            api_key=settings.nih_api_key,
+        )
+        _DEFAULT_COMPONENTS["mesh_builder"] = builder
+    return cast(NIHMeshBuilder, builder)
+
+
+def _get_default_espell_client() -> NIHESpellClient:
+    client = _DEFAULT_COMPONENTS.get("espell")
+    if client is None:
+        http_client = _get_shared_http_client("espell", timeout=5.0)
+        settings = get_app_settings()
+        client = NIHESpellClient(
+            http_client=http_client,
+            contact_email=settings.nih_contact_email,
+            api_key=settings.nih_api_key,
+        )
+        _DEFAULT_COMPONENTS["espell"] = client
+    return cast(NIHESpellClient, client)
+
+
+def _get_default_pubmed_searcher() -> NIHPubMedSearcher:
+    searcher = _DEFAULT_COMPONENTS.get("pubmed_searcher")
+    if searcher is None:
+        http_client = _get_shared_http_client("pubmed", timeout=10.0)
+        settings = get_app_settings()
+        searcher = NIHPubMedSearcher(
+            http_client=http_client,
+            contact_email=settings.nih_contact_email,
+            api_key=settings.nih_api_key,
+        )
+        _DEFAULT_COMPONENTS["pubmed_searcher"] = searcher
+    return cast(NIHPubMedSearcher, searcher)
+
+
+def _get_default_mesh_suggestion_client() -> NIHMeshSuggestionClient:
+    client = _DEFAULT_COMPONENTS.get("mesh_suggestion")
+    if client is None:
+        http_client = _get_shared_http_client("mesh_suggestion", timeout=5.0)
+        client = NIHMeshSuggestionClient(http_client=http_client)
+        _DEFAULT_COMPONENTS["mesh_suggestion"] = client
+    return cast(NIHMeshSuggestionClient, client)
+
+
+def _reset_shared_clients() -> None:
+    with _CLIENT_LOCK:
+        for client in _SHARED_HTTP_CLIENTS.values():
+            try:
+                client.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                logger.debug("Failed to close NIH shared client", exc_info=True)
+        _SHARED_HTTP_CLIENTS.clear()
+        _DEFAULT_COMPONENTS.clear()
+
+
+atexit.register(_reset_shared_clients)
+
 
 def resolve_condition_via_nih(
     raw_condition: str,
@@ -62,10 +143,10 @@ def resolve_condition_via_nih(
 
         return _wrapped
 
-    builder = mesh_builder or NIHMeshBuilder()
-    espell = espell_client or NIHESpellClient()
-    searcher = pubmed_searcher or NIHPubMedSearcher()
-    suggestion_client = mesh_suggestion_client or NIHMeshSuggestionClient()
+    builder = mesh_builder or _get_default_mesh_builder()
+    espell = espell_client or _get_default_espell_client()
+    searcher = pubmed_searcher or _get_default_pubmed_searcher()
+    suggestion_client = mesh_suggestion_client or _get_default_mesh_suggestion_client()
     cached_signatures: Dict[Tuple[str, ...], str] = {}
     settings = get_app_settings()
     refresh_ttl = refresh_ttl_seconds or settings.search.refresh_ttl_seconds

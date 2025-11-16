@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlalchemy.orm import Session
 
 from app.models import SearchArtefact, SearchTerm, SearchTermVariant
 from app.services.nih_pipeline import resolve_condition_via_nih
 from app.services.search import MeshBuildResult, compute_mesh_signature, resolve_search_input
+import app.services.nih_pipeline as nih_pipeline_module
 
 
 class RecordingBuilder:
@@ -354,3 +357,71 @@ def test_resolve_condition_via_nih_detects_changed_ranked_results(session: Sessi
     artefact = refreshed.artefacts[0]
     assert artefact.result_signature == updated_signature
     assert artefact.last_refreshed_at > stale_timestamp
+
+
+def test_resolve_condition_via_nih_uses_shared_default_clients(session: Session) -> None:
+    reset_shared = getattr(nih_pipeline_module, "_reset_shared_clients", None)
+    if reset_shared:
+        reset_shared()
+
+    builder_inits = 0
+
+    class StubBuilder:
+        def __call__(self, normalized_condition: str) -> MeshBuildResult:
+            return MeshBuildResult(
+                mesh_terms=["Stub Condition"],
+                query_payload={"term": normalized_condition},
+                source="stub",
+            )
+
+    class StubESpell:
+        def __call__(self, _: str) -> None:
+            return None
+
+    class StubPubMedSearcher:
+        def __call__(self, mesh_terms: list[str]) -> StubPubMedResult:
+            return StubPubMedResult(["12345"])
+
+    class StubSuggestionClient:
+        def suggest(self, _: str) -> list[str]:
+            return []
+
+    def builder_factory(*_: object, **__: object) -> StubBuilder:
+        nonlocal builder_inits
+        builder_inits += 1
+        return StubBuilder()
+
+    try:
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(nih_pipeline_module, "NIHMeshBuilder", side_effect=builder_factory)
+            )
+            stack.enter_context(
+                patch.object(nih_pipeline_module, "NIHESpellClient", return_value=StubESpell())
+            )
+            stack.enter_context(
+                patch.object(nih_pipeline_module, "NIHPubMedSearcher", return_value=StubPubMedSearcher())
+            )
+            stack.enter_context(
+                patch.object(
+                    nih_pipeline_module,
+                    "NIHMeshSuggestionClient",
+                    return_value=StubSuggestionClient(),
+                )
+            )
+
+            resolve_condition_via_nih(
+                "alpha",
+                session=session,
+                refresh_ttl_seconds=0,
+            )
+            resolve_condition_via_nih(
+                "beta",
+                session=session,
+                refresh_ttl_seconds=0,
+            )
+    finally:
+        if reset_shared:
+            reset_shared()
+
+    assert builder_inits == 1

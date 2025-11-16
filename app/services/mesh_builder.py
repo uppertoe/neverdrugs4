@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Optional, Tuple
 from xml.etree import ElementTree
+from xml.etree.ElementTree import tostring
 
 import httpx
 
 from app.services.espell import DEFAULT_BASE_URL as NIH_BASE_URL
-from app.services.search import MeshBuildResult, normalize_condition
+from app.services.nih_http import dispatch_nih_request
 from app.services.query_terms import build_nih_search_query
+from app.services.search import MeshBuildResult, normalize_condition
+from app.settings import DEFAULT_NIH_API_KEY, DEFAULT_NIH_CONTACT_EMAIL
 
 
 _TOKEN_TRANSLATION = str.maketrans({ch: " " for ch in "-,/"})
@@ -65,6 +69,8 @@ class NIHMeshBuilder:
         max_terms: int = 5,
         disallowed_extra_tokens: Optional[set[str]] = None,
         require_primary_token: bool = True,
+        contact_email: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self._http_client = http_client
         self.base_url = base_url.rstrip("/")
@@ -78,6 +84,10 @@ class NIHMeshBuilder:
             else set(DEFAULT_DISALLOWED_EXTRA_TOKENS)
         )
         self.require_primary_token = require_primary_token
+        resolved_email = contact_email or os.getenv("NIH_CONTACT_EMAIL") or DEFAULT_NIH_CONTACT_EMAIL
+        self.contact_email = resolved_email.strip() if resolved_email and resolved_email.strip() else None
+        resolved_key = api_key or os.getenv("NIH_API_KEY") or os.getenv("NCBI_API_KEY") or DEFAULT_NIH_API_KEY
+        self.api_key = resolved_key.strip() if resolved_key and resolved_key.strip() else None
 
     def __call__(self, normalized_term: str) -> MeshBuildResult:
         esearch = self._fetch_esearch(normalized_term)
@@ -86,14 +96,22 @@ class NIHMeshBuilder:
             "esearch": {
                 "ids": esearch.ids,
                 "translation": esearch.translation,
-                "primary_id": esearch.primary_id,
+                "primary_id": None,
             },
         }
 
-        if not esearch.primary_id:
+        primary_candidate, candidates, confident_candidates = self._select_esummary(
+            esearch.ids,
+            normalized_term,
+        )
+        payload["esearch"]["primary_id"] = primary_candidate.mesh_id if primary_candidate else None
+        payload["esearch"]["candidates"] = [candidate.to_dict() for candidate in candidates]
+
+        if not primary_candidate:
             return MeshBuildResult(mesh_terms=[], query_payload=payload, source="nih-esearch+esummary")
 
-        esummary = self._fetch_esummary(esearch.primary_id)
+        esummary = primary_candidate.summary
+        canonical_term = primary_candidate.canonical_term
         alias_tokens = self._collect_alias_tokens(esummary.mesh_terms, normalized_term)
 
         ranked_terms, query_tokens, primary_token = self._rank_terms(
@@ -101,28 +119,51 @@ class NIHMeshBuilder:
             normalized_term,
             alias_tokens=alias_tokens,
         )
-        selected_terms = self._select_terms(
+        ranked_selection = self._select_terms(
             ranked_terms,
             query_tokens=query_tokens,
             primary_token=primary_token,
             alias_tokens=alias_tokens,
         )
 
+        ranked_selection = self._harmonise_selected_terms(
+            ranked_selection,
+            canonical_term=canonical_term,
+        )
+
+        resolved_mesh_terms = self._resolve_mesh_terms(primary_candidate, confident_candidates)
+        if len(resolved_mesh_terms) > 1:
+            selected_terms = resolved_mesh_terms
+        else:
+            selected_terms = ranked_selection
+
         payload["esummary"] = {
-            "primary_id": esearch.primary_id,
+            "primary_id": primary_candidate.mesh_id,
             "mesh_terms": esummary.mesh_terms,
             "raw_xml": esummary.raw_xml,
         }
         payload["ranked_mesh_terms"] = [entry.to_dict() for entry in ranked_terms]
+        if canonical_term:
+            payload["canonical_mesh_term"] = canonical_term
+        payload["selected_mesh_terms"] = list(selected_terms)
+
+        payload["esearch"]["resolved_mesh_terms"] = list(resolved_mesh_terms)
 
         try:
             payload["esearch"]["query"] = build_nih_search_query(selected_terms)
         except ValueError:
             selected_terms = []
+            payload["selected_mesh_terms"] = []
             payload["esearch"]["query"] = None
 
+        mesh_terms = (
+            resolved_mesh_terms
+            if resolved_mesh_terms
+            else ([canonical_term] if canonical_term else list(selected_terms))
+        )
+
         return MeshBuildResult(
-            mesh_terms=selected_terms,
+            mesh_terms=mesh_terms,
             query_payload=payload,
             source="nih-esearch+esummary",
         )
@@ -142,49 +183,172 @@ class NIHMeshBuilder:
 
         return ESearchResult(ids=ids, translation=translation, raw_xml=response.text)
 
-    def _fetch_esummary(self, mesh_id: str) -> ESummaryResult:
+    def _fetch_esummary(self, mesh_ids: list[str]) -> dict[str, ESummaryResult]:
+        if not mesh_ids:
+            return {}
+
         params = {
             "db": self.database,
-            "id": mesh_id,
+            "id": ",".join(mesh_ids),
             "version": "2.0",
         }
         response = self._dispatch_request("esummary.fcgi", params)
         root = self._parse_xml(response.text)
 
-        mesh_terms = self._extract_mesh_terms(root)
+        summaries: dict[str, ESummaryResult] = {}
+        for docsum in self._iter_docsum_nodes(root):
+            mesh_id = self._extract_docsum_id(docsum)
+            if not mesh_id:
+                continue
+            mesh_terms = self._extract_mesh_terms(docsum)
+            summaries[mesh_id] = ESummaryResult(
+                mesh_terms=mesh_terms,
+                raw_xml=tostring(docsum, encoding="unicode"),
+            )
 
-        return ESummaryResult(mesh_terms=mesh_terms, raw_xml=response.text)
+        if not summaries:
+            return {}
 
-    def _extract_mesh_terms(self, root: ElementTree.Element) -> list[str]:
-        error_node = root.find(".//ERROR")
-        if error_node is not None:
-            return []
+        # Ensure every requested id is represented, even if missing from payload
+        for mesh_id in mesh_ids:
+            summaries.setdefault(mesh_id, ESummaryResult(mesh_terms=[], raw_xml=response.text))
 
-        terms = [
-            node.text.strip()
-            for node in root.findall('.//Item[@Name="DS_MeshTerms"]/Item')
-            if node.text and node.text.strip()
+        return summaries
+
+    def _select_esummary(
+        self,
+        mesh_ids: list[str],
+        normalized_query: str,
+    ) -> tuple["_DescriptorCandidate" | None, list["_DescriptorCandidate"], list["_DescriptorCandidate"]]:
+        if not mesh_ids:
+            return None, [], []
+
+        query_tokens = set(_tokenize_for_mesh(normalize_condition(normalized_query)))
+        candidates: list[_DescriptorCandidate] = []
+
+        esummary_map = self._fetch_esummary(mesh_ids)
+
+        for index, mesh_id in enumerate(mesh_ids):
+            summary = esummary_map.get(mesh_id)
+            canonical_term = self._canonical_mesh_term(summary.mesh_terms)
+            if not canonical_term:
+                continue
+
+            canonical_normalized = normalize_condition(canonical_term)
+            canonical_tokens = set(_tokenize_for_mesh(canonical_normalized))
+
+            alias_tokens = self._collect_alias_tokens(summary.mesh_terms, normalized_query)
+            ranked_terms, _, _ = self._rank_terms(
+                summary.mesh_terms,
+                normalized_query,
+                alias_tokens=alias_tokens,
+            )
+            best_entry = ranked_terms[0] if ranked_terms else None
+            ranked_tokens = best_entry.tokens if best_entry else set()
+
+            canonical_overlap = len(query_tokens & canonical_tokens)
+            ranked_overlap = len(query_tokens & ranked_tokens)
+            has_primary_token = bool(query_tokens and ranked_tokens and query_tokens & ranked_tokens)
+            score = best_entry.score if best_entry else 0.0
+
+            candidates.append(
+                _DescriptorCandidate(
+                    mesh_id=mesh_id,
+                    summary=summary,
+                    canonical_term=canonical_term,
+                    canonical_tokens=canonical_tokens,
+                    canonical_overlap=canonical_overlap,
+                    ranked_overlap=ranked_overlap,
+                    has_query_token=has_primary_token,
+                    score=score,
+                    index=index,
+                )
+            )
+
+        if not candidates:
+            return None, [], []
+
+        confident = [
+            candidate
+            for candidate in candidates
+            if candidate.canonical_overlap > 0 or candidate.ranked_overlap > 0
         ]
-        if terms:
-            return terms
 
-        return [
-            node.text.strip()
-            for node in root.findall(".//DS_MeshTerms//DS_MeshTerm")
-            if node.text and node.text.strip()
-        ]
+        confident_sorted = sorted(
+            confident,
+            key=lambda c: (
+                -c.canonical_overlap,
+                -c.ranked_overlap,
+                -c.score,
+                c.index,
+            ),
+        )
+
+        if confident_sorted:
+            primary = confident_sorted[0]
+        else:
+            primary = min(candidates, key=lambda c: c.index)
+
+        return primary, candidates, confident_sorted
+
+    def _iter_docsum_nodes(self, root: ElementTree.Element) -> list[ElementTree.Element]:
+        docsum_nodes: list[ElementTree.Element] = []
+        docsum_nodes.extend(root.findall("DocSum"))
+        docsum_nodes.extend(root.findall(".//DocSum"))
+        document_summaries = root.findall(".//DocumentSummarySet/DocumentSummary")
+        if document_summaries:
+            docsum_nodes.extend(document_summaries)
+        seen = set()
+        ordered: list[ElementTree.Element] = []
+        for node in docsum_nodes:
+            identity = id(node)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            ordered.append(node)
+        return ordered
+
+    @staticmethod
+    def _extract_docsum_id(node: ElementTree.Element) -> str | None:
+        if node.tag == "DocSum":
+            identifier = node.findtext("Id")
+            return identifier.strip() if identifier else None
+        if node.tag == "DocumentSummary":
+            identifier = node.get("uid")
+            return identifier.strip() if identifier else None
+        return None
+
+    def _extract_mesh_terms(self, node: ElementTree.Element) -> list[str]:
+        def _collect(xpath: str) -> list[str]:
+            collected: list[str] = []
+            for child in node.findall(xpath):
+                text = (child.text or "").strip()
+                if text:
+                    collected.append(text)
+            return collected
+
+        for candidate_xpath in (
+            './/Item[@Name="DS_MeshTerms"]/Item',
+            './/DS_MeshTerms//DS_MeshTerm',
+            './/DS_MeshTerms/*',
+        ):
+            terms = _collect(candidate_xpath)
+            if terms:
+                return terms
+
+        return []
 
     def _dispatch_request(self, endpoint: str, params: dict[str, str]) -> httpx.Response:
-        url = f"{self.base_url}/{endpoint}"
-        if self._http_client is not None:
-            response = self._http_client.get(url, params=params)
-        else:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.get(url, params=params)
-
-        if response.status_code >= 400:
-            raise RuntimeError(f"NIH request failed with status {response.status_code} for {endpoint}")
-        return response
+        return dispatch_nih_request(
+            http_client=self._http_client,
+            method="get",
+            base_url=self.base_url,
+            endpoint=endpoint,
+            params=params,
+            contact_email=self.contact_email,
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def _parse_xml(self, xml_payload: str) -> ElementTree.Element:
         try:
@@ -344,6 +508,104 @@ class NIHMeshBuilder:
 
         meaningful_tokens = {token for token in tokens if token and token not in _GENERIC_ALIAS_TOKENS}
         return meaningful_tokens
+
+    @staticmethod
+    def _canonical_mesh_term(mesh_terms: list[str]) -> str | None:
+        for term in mesh_terms or []:
+            cleaned = (term or "").strip()
+            if cleaned:
+                return cleaned
+        return None
+
+    def _resolve_mesh_terms(
+        self,
+        primary: Optional[_DescriptorCandidate],
+        confident_candidates: list[_DescriptorCandidate],
+    ) -> list[str]:
+        if primary is None:
+            return []
+
+        if not confident_candidates:
+            return [primary.canonical_term]
+
+        top = confident_candidates[0]
+        if len(confident_candidates) == 1:
+            return [top.canonical_term]
+
+        second = confident_candidates[1]
+
+        if top.canonical_overlap > second.canonical_overlap:
+            return [top.canonical_term]
+        if top.ranked_overlap > second.ranked_overlap:
+            return [top.canonical_term]
+        if top.score - second.score >= 0.1:
+            return [top.canonical_term]
+
+        terms: list[str] = []
+        for candidate in confident_candidates:
+            if candidate.canonical_term not in terms:
+                terms.append(candidate.canonical_term)
+            if len(terms) >= self.max_terms:
+                break
+
+        if not terms:
+            return [primary.canonical_term]
+
+        return terms
+
+    def _harmonise_selected_terms(
+        self,
+        selected_terms: list[str],
+        *,
+        canonical_term: str | None,
+    ) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _add(term: str | None) -> None:
+            if not term:
+                return
+            cleaned = term.strip()
+            if not cleaned:
+                return
+            key = cleaned.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            ordered.append(cleaned)
+
+        _add(canonical_term)
+        for term in selected_terms:
+            _add(term)
+
+        if self.max_terms and len(ordered) > self.max_terms:
+            ordered = ordered[: self.max_terms]
+
+        return ordered
+
+
+@dataclass(slots=True)
+class _DescriptorCandidate:
+    mesh_id: str
+    summary: ESummaryResult
+    canonical_term: str
+    canonical_tokens: set[str]
+    canonical_overlap: int
+    ranked_overlap: int
+    has_query_token: bool
+    score: float
+    index: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mesh_id": self.mesh_id,
+            "canonical_term": self.canonical_term,
+            "canonical_overlap": self.canonical_overlap,
+            "ranked_overlap": self.ranked_overlap,
+            "has_query_token": self.has_query_token,
+            "score": round(self.score, 4),
+            "index": self.index,
+        }
 
 
 @dataclass(slots=True)

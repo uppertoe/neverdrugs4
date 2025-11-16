@@ -34,14 +34,19 @@ _DEPOLARISING_BLOCKERS = (
     "suxamethonium",
 )
 
-_NON_DEPOLARISING_BLOCKERS = (
+_AMINOSTEROID_BLOCKERS = (
     "rocuronium",
     "vecuronium",
     "pancuronium",
+    "pipecuronium",
+    "rapacuronium",
+)
+
+_BENZYLISOQUINOLINIUM_BLOCKERS = (
     "atracurium",
     "cisatracurium",
     "mivacurium",
-    "pipecuronium",
+    "doxacurium",
     "gallamine",
 )
 
@@ -53,6 +58,9 @@ _GENERAL_NEUROMUSCULAR = (
     "neuromuscular blocking agents",
     "neuromuscular blocking drug",
     "neuromuscular blocking drugs",
+    "neuromuscular block",
+    "neuromuscular blockade",
+    "neuromuscular blockade (intervention)",
     "nmdb",
     "paralytic agent",
     "paralytic agents",
@@ -147,10 +155,20 @@ def _build_default_groups() -> Dict[str, DrugGroup]:
     )
 
     register(
-        _NON_DEPOLARISING_BLOCKERS,
-        key="non-depolarising-neuromuscular-blockers",
-        label="non-depolarising neuromuscular blockers",
-        classes=("non-depolarising neuromuscular blocker",),
+        _AMINOSTEROID_BLOCKERS,
+        key="aminosteroid-neuromuscular-blockers",
+        label="aminosteroid neuromuscular blockers",
+        classes=("neuromuscular blocker (non-depolarising)", "neuromuscular blocker (aminosteroid)"),
+    )
+
+    register(
+        _BENZYLISOQUINOLINIUM_BLOCKERS,
+        key="benzylisoquinolinium-neuromuscular-blockers",
+        label="benzylisoquinolinium neuromuscular blockers",
+        classes=(
+            "neuromuscular blocker (non-depolarising)",
+            "neuromuscular blocker (benzylisoquinolinium)",
+        ),
     )
 
     register(

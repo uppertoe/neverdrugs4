@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.services.espell import ESpellSuggestion, NIHESpellClient, extract_espell_correction
+from app.settings import DEFAULT_NIH_CONTACT_EMAIL
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -62,7 +63,27 @@ def test_nih_espell_client_returns_suggestion() -> None:
     assert fake_client.calls == [
         (
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/espell.fcgi",
-            {"db": "mesh", "term": "duchene"},
+            {"db": "mesh", "term": "duchene", "email": DEFAULT_NIH_CONTACT_EMAIL},
+        )
+    ]
+
+
+def test_nih_espell_client_injects_api_key_when_provided() -> None:
+    xml_payload = (FIXTURES / "espell_duchene.xml").read_text(encoding="utf-8")
+    fake_client = _FakeHttpxClient(_FakeResponse(xml_payload))
+    client = NIHESpellClient(http_client=fake_client, api_key="abc123", contact_email="person@example.com")
+
+    client("amyloidosis")
+
+    assert fake_client.calls == [
+        (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/espell.fcgi",
+            {
+                "db": "mesh",
+                "term": "amyloidosis",
+                "email": "person@example.com",
+                "api_key": "abc123",
+            },
         )
     ]
 

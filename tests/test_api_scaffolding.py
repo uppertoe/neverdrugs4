@@ -7,7 +7,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 
 from sqlalchemy import select
-
+from app.tasks import PROGRESS_DESCRIPTIONS
 from app.models import (
     ArticleArtefact,
     ArticleSnippet,
@@ -19,7 +19,9 @@ from app.models import (
     ProcessedClaimSetVersion,
     SearchArtefact,
     SearchTerm,
+    SearchTermVariant,
 )
+from app.utils.slugs import build_search_term_slug
 from app.services.mesh_resolution import MeshResolutionPreview
 from app.services.nih_pipeline import MeshTermsNotFoundError
 from app.services.search import SearchResolution, compute_mesh_signature
@@ -523,8 +525,8 @@ def test_resolve_claims_ignores_force_refresh_parameter(
         mesh_signature=mesh_signature,
         job_id="task-original",
         status="running",
-        progress_state="collecting_articles",
-        progress_payload={"stage": "collecting"},
+        progress_state="fetching_pubmed_articles",
+        progress_payload={"stage": "fetching"},
     )
     session.add(refresh)
     session.flush()
@@ -603,8 +605,8 @@ def test_resolve_claims_requeues_stale_job(
         mesh_signature=mesh_signature,
         job_id="task-stale",
         status="running",
-        progress_state="collecting_articles",
-        progress_payload={"stage": "collecting"},
+        progress_state="fetching_pubmed_articles",
+        progress_payload={"stage": "fetching"},
         updated_at=stale_time,
     )
     session.add(refresh)
@@ -637,6 +639,14 @@ def _seed_search_term_with_artefact(session) -> tuple[SearchTerm, SearchArtefact
     term = SearchTerm(canonical="duchenne muscular dystrophy")
     session.add(term)
     session.flush()
+
+    session.add(
+        SearchTermVariant(
+            term=term,
+            value="Duchenne",
+            normalized_value="duchenne",
+        )
+    )
     session.refresh(term)
 
     artefact = SearchArtefact(
@@ -883,13 +893,17 @@ def test_resolve_claims_logs_enqueue_failures(
 
 def test_get_refresh_status_returns_job_metadata(client, session):
     mesh_signature = "duchenne muscular dystrophy"
+    description = PROGRESS_DESCRIPTIONS["resolving_mesh_terms"]
     refresh = ClaimSetRefresh(
         mesh_signature=mesh_signature,
         job_id="task-123",
         status="running",
         error_message="processing",
-        progress_state="collecting",
-        progress_payload={"steps_completed": ["resolve_condition"]},
+        progress_state="resolving_mesh_terms",
+        progress_payload={
+            "description": description,
+            "steps_completed": ["resolve_condition"],
+        },
     )
     session.add(refresh)
     session.flush()
@@ -907,9 +921,74 @@ def test_get_refresh_status_returns_job_metadata(client, session):
     assert payload["created_at"]
     assert payload["updated_at"]
     assert payload["progress"] == {
-        "stage": "collecting",
-        "details": {"steps_completed": ["resolve_condition"]},
+        "stage": "resolving_mesh_terms",
+        "details": {
+            "description": description,
+            "steps_completed": ["resolve_condition"],
+        },
     }
+    assert payload["status_label"] == description
+
+
+@patch("app.api.routes.resolve_condition_via_nih")
+@patch("app.api.routes.enqueue_claim_pipeline")
+def test_resolve_claims_uses_cached_mesh_resolution_without_preview(
+    enqueue_mock,
+    resolve_mock,
+    client,
+    session,
+    stub_preview_mesh_resolution,
+):
+    stub_preview_mesh_resolution.reset_mock()
+    enqueue_mock.return_value = {"job_id": "job-1", "status": "queued"}
+
+    normalized = "duchenne muscular dystrophy"
+    mesh_terms = ["Duchenne Muscular Dystrophy"]
+    mesh_signature = compute_mesh_signature(mesh_terms)
+
+    term = SearchTerm(
+        canonical=normalized,
+        slug=build_search_term_slug(normalized),
+    )
+    session.add(term)
+    session.flush()
+
+    session.add(
+        SearchTermVariant(
+            term=term,
+            value="Duchenne",
+            normalized_value="duchenne",
+        )
+    )
+
+    session.add(
+        SearchArtefact(
+            term=term,
+            query_payload={"ranked_mesh_terms": mesh_terms},
+            mesh_terms=mesh_terms,
+            mesh_signature=mesh_signature,
+            result_signature="sig-123",
+            ttl_policy_seconds=86_400,
+            last_refreshed_at=datetime.now(timezone.utc),
+        )
+    )
+    session.flush()
+
+    response = client.post(
+        "/api/claims/resolve",
+        json={"condition": "Duchenne"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["resolution"] == {
+        "normalized_condition": normalized,
+        "mesh_terms": mesh_terms,
+        "reused_cached": True,
+        "search_term_id": term.id,
+    }
+    assert stub_preview_mesh_resolution.call_count == 0
+    resolve_mock.assert_not_called()
 
 
 def test_get_refresh_status_includes_claim_set_id_when_ready(client, session):
@@ -1033,7 +1112,7 @@ def test_get_refresh_status_marks_stale_job_retryable(client, session):
         mesh_signature=mesh_signature,
         job_id="task-888",
         status="running",
-        progress_state="collecting",
+        progress_state="fetching_pubmed_articles",
         progress_payload={},
         updated_at=stale_time,
     )

@@ -15,7 +15,9 @@ from app.models import (
 from app.services.processed_claims import (
     InvalidClaimPayload,
     _AggregatedClaim,
+    _DrugCatalogEntry,
     _compute_claim_group_id,
+    _normalise_claim_terms,
     persist_processed_claims,
 )
 
@@ -191,7 +193,7 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
     assert stored_claim.confidence == "high"
     assert stored_claim.summary == "Evidence from multiple reports indicates succinylcholine precipitates crises."
     assert stored_claim.drugs == ["Succinylcholine"]
-    assert stored_claim.drug_classes == ["depolarising neuromuscular blocker", "neuromuscular blocker"]
+    assert stored_claim.drug_classes == ["depolarising neuromuscular blocker"]
     assert stored_claim.severe_reaction_flag is True
     assert set(stored_claim.severe_reaction_terms) == {"anaphylaxis", "Cardiac arrest"}
     assert set(stored_claim.source_claim_ids) == {
@@ -216,7 +218,6 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
     assert terms == {
         ("Succinylcholine", "drug"),
         ("depolarising neuromuscular blocker", "drug_class"),
-        ("neuromuscular blocker", "drug_class"),
     }
     assert {link.claim_id for link in links} == {stored_claim.id}
 
@@ -319,7 +320,6 @@ def test_persist_processed_claims_carries_vote_totals(session) -> None:
             drugs=["Succinylcholine"],
             drug_classes=[
                 "Depolarising neuromuscular blocker",
-                "Neuromuscular blocker",
             ],
             severe_reaction_flag=True,
             severe_reaction_terms=["Malignant hyperthermia"],
@@ -338,7 +338,6 @@ def test_persist_processed_claims_carries_vote_totals(session) -> None:
         drugs=["Succinylcholine"],
         drug_classes=[
             "Depolarising neuromuscular blocker",
-            "Neuromuscular blocker",
         ],
         source_claim_ids=["legacy-claim"],
         severe_reaction_flag=True,
@@ -399,6 +398,52 @@ def test_persist_processed_claims_rejects_missing_claim_id(session) -> None:
 
     with pytest.raises(InvalidClaimPayload, match="missing required field 'id'"):
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+
+def test_normalise_claim_terms_drops_generic_neuromuscular_class() -> None:
+    catalog = {
+        "drug:succinylcholine": _DrugCatalogEntry(
+            drug_id="drug:succinylcholine",
+            name="Succinylcholine",
+            classes=("depolarising neuromuscular blocker",),
+        )
+    }
+
+    drugs, classes, canonical = _normalise_claim_terms(
+        ["drug:succinylcholine"],
+        ["neuromuscular blocker"],
+        drug_catalog=catalog,
+    )
+
+    assert drugs == ["Succinylcholine"]
+    assert classes == ["depolarising neuromuscular blocker"]
+    assert canonical == ["drug:succinylcholine"]
+
+
+def test_normalise_claim_terms_canonicalises_benzylisoquinolinium_label() -> None:
+    catalog = {
+        "drug:atracurium": _DrugCatalogEntry(
+            drug_id="drug:atracurium",
+            name="Atracurium",
+            classes=(
+                "neuromuscular blocker (non-depolarising)",
+                "neuromuscular blocker (benzylisoquinolinium)",
+            ),
+        )
+    }
+
+    drugs, classes, canonical = _normalise_claim_terms(
+        ["drug:atracurium"],
+        ["benzylisoquinolinium neuromuscular blocker"],
+        drug_catalog=catalog,
+    )
+
+    assert drugs == ["Atracurium"]
+    assert classes == [
+        "neuromuscular blocker (non-depolarising)",
+        "neuromuscular blocker (benzylisoquinolinium)",
+    ]
+    assert canonical == ["drug:atracurium"]
 
 
 def test_persist_processed_claims_rejects_missing_type(session) -> None:
@@ -797,7 +842,7 @@ def test_persist_processed_claims_rejects_scalar_claim_drug_classes(session) -> 
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
 
-def test_persist_processed_claims_rejects_claim_without_declaration(session) -> None:
+def test_persist_processed_claims_warns_when_claim_missing_declaration(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="99999999")
@@ -805,14 +850,23 @@ def test_persist_processed_claims_rejects_claim_without_declaration(session) -> 
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["drugs"][0]["claims"] = []
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="is not declared in the top-level drugs claims list",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    result = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = next(version for version in result.versions if version.status == "active")
+    warnings = active_version.pipeline_metadata.get("schema_warnings", [])
+    claim_id = payload["claims"][0]["id"]
+
+    assert any(warning["code"] == "claim-missing-drug-declaration" and warning["claim_id"] == claim_id for warning in warnings)
+    assert any(
+        warning["code"] == "claim-missing-drug-reference"
+        and warning["claim_id"] == claim_id
+        and warning["drug_id"] == payload["drugs"][0]["id"]
+        for warning in warnings
+    )
+    assert len(active_version.claims) == 1
 
 
-def test_persist_processed_claims_rejects_dangling_declared_claim(session) -> None:
+def test_persist_processed_claims_warns_on_dangling_declared_claim(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="10101010")
@@ -820,14 +874,21 @@ def test_persist_processed_claims_rejects_dangling_declared_claim(session) -> No
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["claims"] = []
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="Drug metadata declares claims without payload entries",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    result = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = next(version for version in result.versions if version.status == "active")
+    warnings = active_version.pipeline_metadata.get("schema_warnings", [])
+    declared_claim_id = payload["drugs"][0]["claims"][0]
+
+    assert any(
+        warning["code"] == "orphaned-drug-claim-declaration"
+        and warning["claim_id"] == declared_claim_id
+        for warning in warnings
+    )
+    assert len(active_version.claims) == 0
 
 
-def test_persist_processed_claims_rejects_claim_referencing_undeclared_drug(session) -> None:
+def test_persist_processed_claims_warns_when_claim_references_undeclared_drug(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="10101011")
@@ -844,11 +905,20 @@ def test_persist_processed_claims_rejects_claim_referencing_undeclared_drug(sess
         }
     )
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="references drug 'drug:sevoflurane' without declaration",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    result = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = next(version for version in result.versions if version.status == "active")
+    warnings = active_version.pipeline_metadata.get("schema_warnings", [])
+    claim_id = payload["claims"][0]["id"]
+
+    assert any(
+        warning["code"] == "claim-missing-drug-reference"
+        and warning["claim_id"] == claim_id
+        and warning["drug_id"] == "drug:sevoflurane"
+        for warning in warnings
+    )
+    persisted_claim = active_version.claims[0]
+    assert set(persisted_claim.drugs) == {"Succinylcholine", "Sevoflurane"}
 
 
 def test_persist_processed_claims_rejects_scalar_drug_catalog_entries(session) -> None:

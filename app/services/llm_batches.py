@@ -337,7 +337,7 @@ def _render_user_prompt(
 
     instruction_block = (
         "INSTRUCTIONS\n"
-        "1. Review DRUGS IN SCOPE and emit a drug entry for each listed drug; copy the name exactly, keep the provided class labels, include our ATC codes (or add only when the text clearly justifies it), and list the claim_ids you produce for that drug (leave the list empty when evidence is insufficient).\n"
+    "1. Review DRUGS IN SCOPE and emit a drug entry for each listed drug; copy the name exactly, keep the provided class labels, include our ATC codes (or add only when the text clearly justifies it), and list the claim_ids you produce for that drug (leave the list empty when evidence is insufficient). Never reference a drug in any claim unless you have supplied a matching entry in the drugs array. When handling neuromuscular blockers, prefer precise families (depolarising, aminosteroid, benzylisoquinolinium) instead of the generic class unless the evidence is indistinct.\n"
         "2. Build shared findings (risk | safety | uncertain | nuanced) using only the supplied evidence, keep summaries factual, cite every supporting article_id, and attach all relevant drug_ids—even when a snippet mentions several drugs.\n"
         "3. Do not fabricate claims for drugs with insufficient evidence; it is acceptable for a drug to have zero claims.\n"
         "4. Use the article_id identifiers we provide—cite an article once even if multiple snippets support it, never invent IDs, and flag unresolved citations in the claim summary if an article_id is missing.\n"

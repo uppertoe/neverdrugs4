@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import logging
 from time import sleep
 from typing import Callable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+# Module-level logger for debugging status propagation from Celery workers.
+logger = logging.getLogger(__name__)
+
+PROGRESS_DESCRIPTIONS: dict[str, str] = {
+    "queued": "Waiting for a worker to begin processing the refresh job.",
+    "resolving_mesh_terms": "Resolving the condition against NIH services to determine authoritative MeSH terms.",
+    "fetching_pubmed_articles": "Fetching PubMed articles and any available full-text content for the condition.",
+    "preparing_llm_batches": "Preparing snippet batches that will be sent to the language model.",
+    "generating_claims": "Calling the OpenAI API to generate refreshed claims from the gathered snippets.",
+    "saving_processed_claims": "Persisting generated claims and associated metadata in the database.",
+    "no_batches": "No eligible snippets were available to build language-model batches.",
+    "no_responses": "The language model returned no usable responses for this refresh.",
+    "empty_results": "Processing completed, but no claims were produced for this condition.",
+    "completed": "Claim refresh completed successfully.",
+    "skipped": "Refresh skipped because required condition data could not be retrieved.",
+    "failed": "Refresh failed due to an unexpected error during processing.",
+}
 
 from .database import create_session_factory
 from .models import ClaimSetRefresh
@@ -52,35 +71,75 @@ def refresh_claims_for_condition(
         )
         full_text_fetcher = NIHFullTextFetcher()
 
-        if job_id:
-            refresh_job = session.execute(
-                select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == job_id)
-            ).scalar_one_or_none()
+        def _ensure_refresh_job() -> ClaimSetRefresh | None:
+            nonlocal refresh_job
             if refresh_job is not None:
-                refresh_job.status = "running"
-                refresh_job.error_message = None
-                _update_refresh_progress(session, refresh_job, stage="resolving_condition")
+                return refresh_job
+            if not job_id and not mesh_signature:
+                return None
 
-        resolution = SearchResolution(
-            normalized_condition=normalized_condition,
-            mesh_terms=list(mesh_terms),
-            reused_cached=False,
-            search_term_id=resolution_id,
-        )
+            max_attempts = 10
+            attempts = 0
+            while attempts < max_attempts and refresh_job is None:
+                candidate: ClaimSetRefresh | None = None
+                if job_id:
+                    candidate = session.execute(
+                        select(ClaimSetRefresh).where(ClaimSetRefresh.job_id == job_id)
+                    ).scalar_one_or_none()
+                if candidate is None and mesh_signature:
+                    candidate = session.execute(
+                        select(ClaimSetRefresh).where(
+                            ClaimSetRefresh.mesh_signature == mesh_signature
+                        )
+                    ).scalar_one_or_none()
+                    if candidate is not None and job_id:
+                        candidate.job_id = job_id
+                        session.flush()
+                        logger.debug(
+                            "Attached Celery job id to refresh record via mesh signature",
+                            extra={
+                                "job_id": job_id,
+                                "mesh_signature": mesh_signature,
+                                "refresh_id": candidate.id,
+                            },
+                        )
 
-        actual_mesh_signature = mesh_signature or compute_mesh_signature(list(mesh_terms))
-        if not actual_mesh_signature:
-            if refresh_job is not None:
-                refresh_job.status = "skipped"
-                refresh_job.error_message = None
-                _update_refresh_progress(
-                    session,
-                    refresh_job,
-                    stage="skipped",
-                    details={"reason": "missing_mesh_signature"},
+                if candidate is not None:
+                    refresh_job = candidate
+                    if refresh_job.status == "queued":
+                        refresh_job.status = "running"
+                        refresh_job.error_message = None
+                        session.flush()
+                        logger.debug(
+                            "Marked refresh job as running",
+                            extra={
+                                "job_id": job_id,
+                                "mesh_signature": mesh_signature,
+                                "refresh_id": refresh_job.id,
+                            },
+                        )
+                    return refresh_job
+
+                attempts += 1
+                if attempts < max_attempts:
+                    sleep(0.2)
+
+            if refresh_job is None:
+                logger.debug(
+                    "Refresh job lookup still pending",
+                    extra={
+                        "job_id": job_id,
+                        "mesh_signature": mesh_signature,
+                        "attempts": attempts,
+                    },
                 )
-            session.commit()
-            return "skipped"
+            return refresh_job
+
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
+            job_record.status = "running"
+            job_record.error_message = None
+            _update_refresh_progress(session, job_record, stage="resolving_mesh_terms")
 
         try:
             fresh_resolution = resolve_condition_via_nih(
@@ -90,12 +149,13 @@ def refresh_claims_for_condition(
                 refresh_ttl_seconds=settings.search.refresh_ttl_seconds,
             )
         except MeshTermsNotFoundError as exc:
-            if refresh_job is not None:
-                refresh_job.status = "skipped"
-                refresh_job.error_message = None
+            job_record = _ensure_refresh_job()
+            if job_record is not None:
+                job_record.status = "skipped"
+                job_record.error_message = None
                 _update_refresh_progress(
                     session,
-                    refresh_job,
+                    job_record,
                     stage="skipped",
                     details={
                         "reason": "missing_mesh_terms",
@@ -107,11 +167,33 @@ def refresh_claims_for_condition(
                 session.commit()
             return "skipped"
 
-        if refresh_job is not None:
+        resolved_mesh_terms = list(fresh_resolution.mesh_terms)
+        fresh_mesh_signature = compute_mesh_signature(resolved_mesh_terms)
+
+        if not fresh_mesh_signature:
+            job_record = _ensure_refresh_job()
+            if job_record is not None:
+                job_record.status = "skipped"
+                job_record.error_message = None
+                _update_refresh_progress(
+                    session,
+                    job_record,
+                    stage="skipped",
+                    details={"reason": "missing_mesh_signature"},
+                )
+            session.commit()
+            return "skipped"
+
+        job_record = _ensure_refresh_job()
+        if job_record is not None and job_record.mesh_signature != fresh_mesh_signature:
+            job_record.mesh_signature = fresh_mesh_signature
+
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
             _update_refresh_progress(
                 session,
-                refresh_job,
-                stage="collecting_articles",
+                job_record,
+                stage="fetching_pubmed_articles",
                 details={"search_term_id": fresh_resolution.search_term_id},
             )
 
@@ -124,11 +206,12 @@ def refresh_claims_for_condition(
         )
         session.flush()
 
-        if refresh_job is not None:
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
             _update_refresh_progress(
                 session,
-                refresh_job,
-                stage="building_batches",
+                job_record,
+                stage="preparing_llm_batches",
                 details={"search_term_id": fresh_resolution.search_term_id},
             )
 
@@ -139,53 +222,57 @@ def refresh_claims_for_condition(
             mesh_terms=fresh_resolution.mesh_terms,
         )
         if not batches:
-            if refresh_job is not None:
-                refresh_job.status = "no-batches"
-                refresh_job.error_message = None
+            job_record = _ensure_refresh_job()
+            if job_record is not None:
+                job_record.status = "no-batches"
+                job_record.error_message = None
                 _update_refresh_progress(
                     session,
-                    refresh_job,
+                    job_record,
                     stage="no_batches",
                     details={"reason": "no_llm_batches"},
                 )
             session.commit()
             return "no-batches"
 
-        if refresh_job is not None:
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
             _update_refresh_progress(
                 session,
-                refresh_job,
-                stage="invoking_llm",
+                job_record,
+                stage="generating_claims",
                 details={"batch_count": len(batches)},
             )
 
         client = OpenAIChatClient()
         responses = client.run_batches(batches)
         if not responses:
-            if refresh_job is not None:
-                refresh_job.status = "no-responses"
-                refresh_job.error_message = None
+            job_record = _ensure_refresh_job()
+            if job_record is not None:
+                job_record.status = "no-responses"
+                job_record.error_message = None
                 _update_refresh_progress(
                     session,
-                    refresh_job,
+                    job_record,
                     stage="no_responses",
                     details={"reason": "llm_returned_no_responses"},
                 )
             session.commit()
             return "no-responses"
 
-        if refresh_job is not None:
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
             _update_refresh_progress(
                 session,
-                refresh_job,
-                stage="persisting_claims",
+                job_record,
+                stage="saving_processed_claims",
                 details={"response_count": len(responses)},
             )
 
         claim_set = persist_processed_claims(
             session,
             search_term_id=fresh_resolution.search_term_id,
-            mesh_signature=compute_mesh_signature(list(fresh_resolution.mesh_terms)),
+            mesh_signature=fresh_mesh_signature,
             condition_label=condition_label,
             llm_payloads=responses,
         )
@@ -196,13 +283,14 @@ def refresh_claims_for_condition(
         else:
             claim_count = 0
 
-        if refresh_job is not None:
-            refresh_job.error_message = None
+        job_record = _ensure_refresh_job()
+        if job_record is not None:
+            job_record.error_message = None
             if claim_count == 0:
-                refresh_job.status = "empty-results"
+                job_record.status = "empty-results"
                 _update_refresh_progress(
                     session,
-                    refresh_job,
+                    job_record,
                     stage="empty_results",
                     details={
                         "response_count": len(responses),
@@ -210,10 +298,10 @@ def refresh_claims_for_condition(
                     },
                 )
             else:
-                refresh_job.status = "completed"
+                job_record.status = "completed"
                 _update_refresh_progress(
                     session,
-                    refresh_job,
+                    job_record,
                     stage="completed",
                     details={
                         "response_count": len(responses),
@@ -255,8 +343,16 @@ def _update_refresh_progress(
 ) -> None:
     if refresh_job is None:
         return
+    payload = dict(details or {})
+    description = PROGRESS_DESCRIPTIONS.get(stage)
+    if description and "description" not in payload:
+        payload["description"] = description
+
     refresh_job.progress_state = stage
-    refresh_job.progress_payload = details or {}
+    refresh_job.progress_payload = payload
+    if refresh_job.status == "queued":
+        refresh_job.status = "running"
+
     session.flush()
 
 

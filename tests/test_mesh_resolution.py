@@ -39,9 +39,20 @@ class _StubSuggestions:
         return list(self.responses)
 
 
-def _build_result(mesh_terms: list[str], ranked: list[str] | None = None) -> MeshBuildResult:
+def _build_result(
+    mesh_terms: list[str],
+    ranked: list[str] | None = None,
+    selected: list[str] | None = None,
+) -> MeshBuildResult:
     ranked_entries = [{"term": term} for term in ranked or []]
     payload: dict[str, Any] = {"ranked_mesh_terms": ranked_entries}
+    canonical = mesh_terms[0] if mesh_terms else None
+    if canonical:
+        payload["canonical_mesh_term"] = canonical
+    if selected is not None:
+        payload["selected_mesh_terms"] = list(selected)
+    elif ranked:
+        payload["selected_mesh_terms"] = list(ranked)
     return MeshBuildResult(mesh_terms=mesh_terms, query_payload=payload, source="test")
 
 
@@ -66,7 +77,10 @@ def test_preview_resolution_applies_espell_correction() -> None:
 
 
 def test_preview_resolution_with_single_term_resolves_immediately() -> None:
-    builder = _StubMeshBuilder(result=_build_result(["Porphyria Variegata"], ["Porphyria Variegata"]), calls=[])
+    builder = _StubMeshBuilder(
+        result=_build_result(["Porphyria Variegata"], ["Porphyria Variegata"]),
+        calls=[],
+    )
     espell = _StubESpell(suggestion=None, calls=[])
     suggestions = _StubSuggestions(responses=[], calls=[])
 
@@ -84,7 +98,36 @@ def test_preview_resolution_with_single_term_resolves_immediately() -> None:
     assert suggestions.calls == []
 
 
-def test_preview_resolution_with_multiple_terms_requests_clarification() -> None:
+def test_preview_resolution_with_aliases_resolves_using_canonical() -> None:
+    builder = _StubMeshBuilder(
+        result=_build_result(
+            ["Porphyria, Variegate"],
+            ["Porphyria, Variegate", "Variegate Porphyria", "Porphyria Variegata"],
+        ),
+        calls=[],
+    )
+    espell = _StubESpell(suggestion=None, calls=[])
+    suggestions = _StubSuggestions(responses=["Unused"], calls=[])
+
+    preview = preview_mesh_resolution(
+        "Porphyria",
+        mesh_builder=builder,
+        espell_client=espell,
+        suggestion_client=suggestions,
+    )
+
+    assert preview.status == "resolved"
+    assert preview.mesh_terms == ["Porphyria, Variegate"]
+    assert preview.ranked_options == [
+        "Porphyria, Variegate",
+        "Variegate Porphyria",
+        "Porphyria Variegata",
+    ]
+    assert preview.suggestions == []
+    assert suggestions.calls == []
+
+
+def test_preview_resolution_with_multiple_canonical_terms_requests_clarification() -> None:
     builder = _StubMeshBuilder(
         result=_build_result(
             ["Acute Intermittent Porphyria", "Porphyria, Variegate"],

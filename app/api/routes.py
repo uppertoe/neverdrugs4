@@ -18,12 +18,13 @@ from app.models import (
     ProcessedClaimSet,
     SearchArtefact,
     SearchTerm,
+    SearchTermVariant,
 )
 from app.job_queue import enqueue_claim_refresh
 from app.services.mesh_resolution import preview_mesh_resolution
 from app.services.nih_pipeline import MeshTermsNotFoundError, resolve_condition_via_nih
 from app.services.query_terms import build_nih_search_query
-from app.services.search import MeshBuildResult, compute_mesh_signature, normalize_condition
+from app.services.search import MeshBuildResult, SearchResolution, compute_mesh_signature, normalize_condition
 
 DEFAULT_REFRESH_STALE_SECONDS = 300
 DEFAULT_REFRESH_STALE_QUEUE_SECONDS = 60
@@ -52,6 +53,64 @@ def _load_search_term(session, ref: str) -> SearchTerm | None:
         return session.get(SearchTerm, int(ref))
     stmt = select(SearchTerm).where(SearchTerm.slug == ref)
     return session.execute(stmt).scalar_one_or_none()
+
+
+def _artefact_is_current(artefact: SearchArtefact) -> bool:
+    ttl_seconds = int(artefact.ttl_policy_seconds or 0)
+    if ttl_seconds <= 0:
+        return True
+
+    timestamp = artefact.last_refreshed_at or artefact.created_at
+    if timestamp is None:
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timestamp.tzinfo)
+    age_seconds = (now - timestamp).total_seconds()
+    return age_seconds < ttl_seconds
+
+
+def _freshest_valid_artefact(session, term: SearchTerm) -> SearchArtefact | None:
+    stmt = (
+        select(SearchArtefact)
+        .where(SearchArtefact.search_term_id == term.id)
+        .order_by(SearchArtefact.last_refreshed_at.desc(), SearchArtefact.created_at.desc())
+    )
+
+    for artefact in session.execute(stmt).scalars():
+        if _artefact_is_current(artefact):
+            return artefact
+    return None
+
+
+def _load_cached_resolution(session, raw_condition: str) -> SearchResolution | None:
+    normalized = normalize_condition(raw_condition)
+    stmt = select(SearchTerm).where(SearchTerm.canonical == normalized)
+    term = session.execute(stmt).scalar_one_or_none()
+
+    if term is None:
+        variant_stmt = (
+            select(SearchTerm)
+            .join(SearchTermVariant)
+            .where(SearchTermVariant.normalized_value == normalized)
+            .limit(1)
+        )
+        term = session.execute(variant_stmt).scalar_one_or_none()
+
+    if term is None:
+        return None
+
+    artefact = _freshest_valid_artefact(session, term)
+    if artefact is None:
+        return None
+
+    return SearchResolution(
+        normalized_condition=term.canonical,
+        mesh_terms=list(artefact.mesh_terms),
+        reused_cached=True,
+        search_term_id=term.id,
+    )
 
 
 def _serialise_claim_set(claim_set: ProcessedClaimSet) -> dict:
@@ -314,10 +373,17 @@ def _serialise_refresh_job(
         or _refresh_is_stale(refresh)
         or _refresh_empty_can_retry(refresh)
     )
+    status_label = refresh.status
+    description = progress_details.get("description") if isinstance(progress_details, dict) else None
+    if isinstance(description, str) and description:
+        status_label = description
+    elif refresh.status in {"queued", "running"} and (refresh.progress_state or "").strip():
+        status_label = refresh.progress_state.replace("_", " ")
     return {
         "mesh_signature": refresh.mesh_signature,
         "job_id": refresh.job_id,
         "status": refresh.status,
+        "status_label": status_label,
         "error_message": refresh.error_message,
         "created_at": refresh.created_at.isoformat() if refresh.created_at else None,
         "updated_at": refresh.updated_at.isoformat() if refresh.updated_at else None,
@@ -380,6 +446,7 @@ def resolve_claims():
     manual_mesh_terms: list[str] = []
     manual_builder = None
     mesh_terms_supplied = "mesh_terms" in body
+    cached_resolution: SearchResolution | None = None
     if mesh_terms_supplied:
         try:
             manual_mesh_terms = _parse_mesh_terms(body.get("mesh_terms"))
@@ -387,49 +454,56 @@ def resolve_claims():
             return jsonify({"detail": str(exc)}), 400
         manual_builder = _manual_mesh_builder(manual_mesh_terms)
     else:
-        preview_result = preview_mesh_resolution(condition)
-        if preview_result.status == "not_found":
+        cached_resolution = _load_cached_resolution(session, condition)
+        if cached_resolution is None:
+            preview_result = preview_mesh_resolution(condition)
+            if preview_result.status == "not_found":
+                return (
+                    jsonify(
+                        {
+                            "detail": "No MeSH terms matched the supplied condition. Manual input is required.",
+                            "resolution_preview": asdict(preview_result),
+                        }
+                    ),
+                    422,
+                )
+            if preview_result.status == "needs_clarification":
+                return (
+                    jsonify(
+                        {
+                            "detail": "Multiple MeSH terms matched the supplied condition. Clarification required.",
+                            "resolution_preview": asdict(preview_result),
+                        }
+                    ),
+                    409,
+                )
+
+    resolution: SearchResolution | None = cached_resolution
+
+    if resolution is None:
+        try:
+            kwargs = {"session": session}
+            if manual_builder is not None:
+                kwargs["mesh_builder"] = manual_builder
+            resolution = resolve_condition_via_nih(condition, **kwargs)
+        except MeshTermsNotFoundError as exc:
             return (
                 jsonify(
                     {
                         "detail": "No MeSH terms matched the supplied condition. Manual input is required.",
-                        "resolution_preview": asdict(preview_result),
+                        "resolution": {
+                            "normalized_condition": exc.normalized_condition,
+                            "mesh_terms": [],
+                            "reused_cached": False,
+                            "search_term_id": exc.search_term_id,
+                        },
+                        "suggested_mesh_terms": list(exc.suggestions),
                     }
                 ),
                 422,
             )
-        if preview_result.status == "needs_clarification":
-            return (
-                jsonify(
-                    {
-                        "detail": "Multiple MeSH terms matched the supplied condition. Clarification required.",
-                        "resolution_preview": asdict(preview_result),
-                    }
-                ),
-                409,
-            )
 
-    try:
-        kwargs = {"session": session}
-        if manual_builder is not None:
-            kwargs["mesh_builder"] = manual_builder
-        resolution = resolve_condition_via_nih(condition, **kwargs)
-    except MeshTermsNotFoundError as exc:
-        return (
-            jsonify(
-                {
-                    "detail": "No MeSH terms matched the supplied condition. Manual input is required.",
-                    "resolution": {
-                        "normalized_condition": exc.normalized_condition,
-                        "mesh_terms": [],
-                        "reused_cached": False,
-                        "search_term_id": exc.search_term_id,
-                    },
-                    "suggested_mesh_terms": list(exc.suggestions),
-                }
-            ),
-            422,
-    )
+    assert resolution is not None
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
     claim_set: ProcessedClaimSet | None = None
     refresh_job: ClaimSetRefresh | None = None

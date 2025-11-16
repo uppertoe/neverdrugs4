@@ -7,9 +7,32 @@ from sqlalchemy.orm import Session
 
 from app.api import api_blueprint
 from app.database import create_session_factory
+from app.job_queue import configure_claim_refresh_enqueuer
 from app.settings import DEFAULT_SEARCH_REFRESH_TTL_SECONDS, load_settings
+from app.tasks import refresh_claims_for_condition_task
 
 SessionFactory = Callable[[], Session]
+
+
+def _enqueue_refresh_via_celery(
+    *,
+    session: Session,
+    resolution,
+    condition_label: str,
+    mesh_signature: str | None,
+) -> Mapping[str, object]:
+    """Dispatch the refresh pipeline through Celery."""
+    _ = session  # session is managed by request lifecycle; Celery job reopens its own.
+    async_result = refresh_claims_for_condition_task.apply_async(
+        kwargs={
+            "resolution_id": resolution.search_term_id,
+            "condition_label": condition_label,
+            "normalized_condition": resolution.normalized_condition,
+            "mesh_terms": list(resolution.mesh_terms),
+            "mesh_signature": mesh_signature,
+        }
+    )
+    return {"job_id": async_result.id, "status": "queued"}
 
 
 def create_app(
@@ -56,5 +79,6 @@ def create_app(
         return jsonify(status="ok"), 200
 
     app.register_blueprint(api_blueprint)
+    configure_claim_refresh_enqueuer(_enqueue_refresh_via_celery)
 
     return app

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from typing import Iterable
 
 import httpx
 
 DEFAULT_BASE_URL = "https://id.nlm.nih.gov/mesh"
 DEFAULT_TIMEOUT_SECONDS = 5.0
-DEFAULT_LIMIT = 5
+DEFAULT_LIMIT = 10
+FETCH_MULTIPLIER = 3
 
 
 class NIHMeshSuggestionClient:
@@ -30,28 +32,31 @@ class NIHMeshSuggestionClient:
         if not cleaned:
             return []
 
-        suggestions: list[str] = []
-        seen: set[str] = set()
+        fetch_limit = max(self.limit * FETCH_MULTIPLIER, self.limit)
+        candidate_scores: dict[str, tuple[float, int]] = {}
+        insertion_order = 0
 
         for endpoint in ("descriptor", "supplementalRecord"):
-            if len(suggestions) >= self.limit:
-                break
-            candidates = self._lookup(endpoint, cleaned)
+            candidates = self._lookup(endpoint, cleaned, limit=fetch_limit)
             for candidate in candidates:
-                if candidate not in seen:
-                    suggestions.append(candidate)
-                    seen.add(candidate)
-                if len(suggestions) >= self.limit:
-                    break
+                if candidate in candidate_scores:
+                    continue
+                score = _similarity_score(cleaned, candidate)
+                candidate_scores[candidate] = (score, insertion_order)
+                insertion_order += 1
 
-        return suggestions
+        ranked = sorted(
+            candidate_scores.items(),
+            key=lambda item: (-item[1][0], item[1][1]),
+        )
+        return [candidate for candidate, _ in ranked[: self.limit]]
 
-    def _lookup(self, endpoint: str, label: str) -> Iterable[str]:
+    def _lookup(self, endpoint: str, label: str, *, limit: int) -> Iterable[str]:
         url = f"{self.base_url}/lookup/{endpoint}"
         params = {
             "label": label,
             "match": "contains",
-            "limit": str(self.limit),
+            "limit": str(max(1, limit)),
         }
 
         try:
@@ -75,3 +80,11 @@ class NIHMeshSuggestionClient:
                 response = client.get(url, params=params)
         response.raise_for_status()
         return response
+
+
+def _similarity_score(query: str, candidate: str) -> float:
+    query_norm = query.lower()
+    candidate_norm = candidate.lower()
+    ratio = SequenceMatcher(None, query_norm, candidate_norm).ratio()
+    prefix_bonus = 0.1 if candidate_norm.startswith(query_norm) else 0.0
+    return ratio + prefix_bonus

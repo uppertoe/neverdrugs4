@@ -90,6 +90,29 @@ def test_pubmed_search_returns_ranked_articles() -> None:
     assert http_client.calls[1][1]["id"].startswith("39503119")
 
 
+def test_pubmed_search_injects_contact_details_and_api_key() -> None:
+    esearch_xml = """<?xml version='1.0'?><eSearchResult><Count>0</Count></eSearchResult>"""
+    http_client = _SequencedHttpClient([_FakeResponse(esearch_xml)])
+    searcher = NIHPubMedSearcher(
+        http_client=http_client,
+        retmax=1,
+        condition_term_expander=_passthrough_expander,
+        contact_email="person@example.com",
+        api_key="token-456",
+    )
+
+    searcher(["Condition"])
+
+    assert len(http_client.calls) == 1
+    url, data = http_client.calls[0]
+    assert url == "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    assert data["db"] == "pubmed"
+    assert data["retmax"] == "1"
+    assert data["sort"] == "relevance"
+    assert data["email"] == "person@example.com"
+    assert data["api_key"] == "token-456"
+
+
 def test_pubmed_search_prefers_pmc_when_doi_missing() -> None:
     esearch_xml = """<?xml version='1.0'?><eSearchResult><Count>1</Count><RetMax>1</RetMax><RetStart>0</RetStart><IdList><Id>12345</Id></IdList></eSearchResult>"""
     esummary_xml = (FIXTURES / "pubmed_esummary_pmc_only.xml").read_text(encoding="utf-8")
