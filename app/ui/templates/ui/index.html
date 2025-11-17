@@ -10,12 +10,12 @@
         <div class="card-body">
           <h1 class="h3 mb-3">Run Evidence Pipeline</h1>
           <form
-            hx-post="/ui/search"
+            hx-post="/ui/search-preview"
             hx-target="#results"
             hx-swap="innerHTML"
             hx-indicator="#search-indicator"
             hx-disabled-elt="#search-submit"
-            hx-on="htmx:beforeRequest:document.getElementById('search-submit').innerText='Submitting...'; htmx:afterRequest:document.getElementById('search-submit').innerText='Search';"
+            hx-on="htmx:beforeRequest:document.getElementById('search-submit').innerText='Checking terms...'; htmx:afterRequest:document.getElementById('search-submit').innerText='Preview search';"
             class="row gy-3"
           >
             <div class="col-12">
@@ -23,7 +23,7 @@
               <input type="text" class="form-control" id="condition" name="condition" required>
             </div>
             <div class="col-12 d-flex justify-content-end">
-              <button type="submit" id="search-submit" class="btn btn-primary">Search</button>
+              <button type="submit" id="search-submit" class="btn btn-primary">Preview search</button>
             </div>
           </form>
           <div id="search-indicator" class="htmx-indicator align-items-center gap-3 mt-3">

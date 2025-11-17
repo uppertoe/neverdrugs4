@@ -92,10 +92,11 @@ def test_ui_home_renders_search_form(client):
     assert response.status_code == 200
     body = response.data.decode()
     assert '<form' in body
-    assert 'hx-post="/ui/search"' in body
+    assert 'hx-post="/ui/search-preview"' in body
     assert 'name="condition"' in body
     assert 'hx-indicator="#search-indicator"' in body
     assert "Request submitted. Awaiting a response..." in body
+    assert "Preview search" in body
     assert 'hx-boost="true"' in body and 'hx-target="#page-main"' in body
     assert 'id="page-main"' in body
 
@@ -124,6 +125,7 @@ def test_ui_search_returns_cached_claims_html(client, session, monkeypatch):
         mesh_terms=list(mesh_terms),
         reused_cached=True,
         search_term_id=123,
+        mesh_signature=claim_set.mesh_signature,
     )
 
     monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: resolution)
@@ -142,6 +144,39 @@ def test_ui_search_returns_cached_claims_html(client, session, monkeypatch):
     assert "data-claim-entry" in body
     assert "Resolved MeSH terms" in body
     assert "Anesthesia" in body
+
+    runs_response = client.get("/ui/runs")
+    runs_body = runs_response.data.decode()
+    assert "Your recent searches" in runs_body
+    assert "King Denborough" in runs_body
+    assert 'href="/ui/claims/' in runs_body
+
+
+def test_ui_search_preview_with_cached_claims_returns_results(client, session, monkeypatch):
+    mesh_terms = ("King Denborough syndrome", "Anesthesia")
+    claim_set = _seed_claim_set(session, mesh_terms=mesh_terms)
+
+    resolution = SearchResolution(
+        normalized_condition="king denborough syndrome",
+        mesh_terms=list(mesh_terms),
+        reused_cached=True,
+        search_term_id=claim_set.last_search_term_id or 1,
+        mesh_signature=claim_set.mesh_signature,
+    )
+
+    monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: resolution)
+
+    response = client.post(
+        "/ui/search-preview",
+        data={"condition": "King Denborough"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert "Confirm search" in body
+    assert "Run refresh" not in body
+    assert "View completed search" in body
 
 
 def test_status_safety_claim_ignores_severe_flag(client, session):
@@ -274,6 +309,55 @@ def test_ui_search_shows_refresh_prompt_when_search_results_change(client, sessi
     expected_url = f"/ui/retry/{quote(mesh_signature, safe='')}"
     assert f'hx-post="{expected_url}"' in body
     assert "Filter by drug" in body
+
+
+def test_ui_search_preview_returns_confirmation(client, monkeypatch):
+    monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: None)
+    preview = MeshResolutionPreview(
+        status="resolved",
+        raw_query="Hypertension",
+        normalized_query="hypertension",
+        mesh_terms=["Hypertension"],
+        ranked_options=["Hypertension"],
+        suggestions=[],
+        espell_correction=None,
+    )
+    monkeypatch.setattr("app.ui.routes.preview_mesh_resolution", lambda condition: preview)
+
+    response = client.post(
+        "/ui/search-preview",
+        data={"condition": "Hypertension"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert "Confirm search" in body
+    assert "Run refresh" in body
+    assert "Hypertension" in body
+    assert "View status" in body
+
+
+def test_ui_search_preview_uses_cached_resolution(client, monkeypatch):
+    resolution = SearchResolution(
+        normalized_condition="hypertension",
+        mesh_terms=["Hypertension"],
+        reused_cached=True,
+        search_term_id=123,
+    )
+    monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: resolution)
+
+    response = client.post(
+        "/ui/search-preview",
+        data={"condition": "Hypertension"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert "Confirm search" in body
+    assert "Hypertension" in body
+    assert "View status" in body
 
 
 def test_ui_search_without_cache_shows_progress_panel(client, monkeypatch):
@@ -412,6 +496,7 @@ def test_ui_search_prompts_for_mesh_selection(client, monkeypatch):
     body = response.data.decode()
     assert "Select MeSH term" in body
     assert "name=\"mesh_term\"" in body
+    assert "Search with this term" in body
 
 
 def test_ui_mesh_select_requires_mesh_term(client):

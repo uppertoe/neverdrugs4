@@ -5,7 +5,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import re
 
-from flask import Blueprint, current_app, render_template, request, url_for
+from flask import Blueprint, current_app, has_request_context, render_template, request, session, url_for
 from sqlalchemy import select
 
 from app.api.routes import (
@@ -38,6 +38,9 @@ TERMINAL_STATUSES = {
     "no-responses",
     "skipped",
 }
+
+USER_RECENT_SEARCHES_KEY = "recent_searches"
+MAX_USER_RECENT_SEARCHES = 20
 
 PIPELINE_STEPS: list[dict[str, str]] = [
     {
@@ -190,6 +193,113 @@ def _build_pipeline_outline(stage: str | None, status: str | None) -> list[dict[
     return outline
 
 
+def _record_user_search(
+    raw_query: str,
+    normalized_query: str,
+    mesh_terms: Sequence[str],
+    *,
+    mesh_signature: str | None = None,
+    claim_set_id: int | None = None,
+) -> None:
+    record: dict[str, object] = {
+        "query": raw_query,
+        "normalized": normalized_query,
+        "mesh_terms": list(mesh_terms),
+    }
+
+    if mesh_signature:
+        record["mesh_signature"] = mesh_signature
+        if has_request_context():
+            record["status_url"] = url_for("ui.status", job_ref=mesh_signature, condition=raw_query)
+
+    if claim_set_id and has_request_context():
+        record["claims_url"] = url_for("ui.view_claims", claim_set_id=claim_set_id)
+
+    if claim_set_id:
+        record["claim_set_id"] = int(claim_set_id)
+
+    stored = session.get(USER_RECENT_SEARCHES_KEY)
+    existing: list[dict[str, object]]
+    if isinstance(stored, list):
+        existing = [item for item in stored if isinstance(item, dict)]
+    else:
+        existing = []
+    updated = [item for item in existing if item.get("query") != raw_query]
+    updated.insert(0, record)
+    session[USER_RECENT_SEARCHES_KEY] = updated[:MAX_USER_RECENT_SEARCHES]
+
+
+def _get_user_recent_searches() -> list[dict[str, object]]:
+    stored = session.get(USER_RECENT_SEARCHES_KEY)
+    if not isinstance(stored, list):
+        return []
+
+    enriched: list[dict[str, object]] = []
+    for item in stored:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        mesh_signature = entry.get("mesh_signature")
+        if mesh_signature and has_request_context() and not entry.get("status_url"):
+            entry["status_url"] = url_for(
+                "ui.status",
+                job_ref=str(mesh_signature),
+                condition=str(entry.get("query") or ""),
+            )
+
+        claim_set_id = entry.get("claim_set_id")
+        if claim_set_id and has_request_context() and not entry.get("claims_url"):
+            try:
+                entry["claims_url"] = url_for("ui.view_claims", claim_set_id=int(claim_set_id))
+            except (TypeError, ValueError):  # pragma: no cover - defensive guard
+                entry.pop("claim_set_id", None)
+
+        enriched.append(entry)
+
+    session[USER_RECENT_SEARCHES_KEY] = enriched[:MAX_USER_RECENT_SEARCHES]
+    return enriched
+
+
+def _build_mesh_options(
+    db_session,
+    *,
+    condition: str,
+    primary_terms: Sequence[str],
+    ranked_options: Sequence[str],
+) -> list[dict[str, object]]:
+    seen_signatures: set[str] = set()
+    options: list[dict[str, object]] = []
+
+    def _append_option(terms: Sequence[str], *, is_primary: bool) -> None:
+        cleaned = [term for term in terms if term]
+        if not cleaned:
+            return
+        signature = compute_mesh_signature(list(cleaned))
+        if not signature or signature in seen_signatures:
+            return
+        seen_signatures.add(signature)
+        claim_set = _load_claim_set_by_signature(db_session, signature)
+        has_claims = claim_set is not None and claim_set.get_active_version() is not None if claim_set else False
+        option: dict[str, object] = {
+            "label": ", ".join(cleaned),
+            "mesh_terms": list(cleaned),
+            "mesh_signature": signature,
+            "is_primary": is_primary,
+            "has_claims": has_claims,
+            "status_url": url_for("ui.status", job_ref=signature, condition=condition),
+        }
+        if has_claims and claim_set is not None:
+            option["claims_url"] = url_for("ui.view_claims", claim_set_id=claim_set.id)
+        options.append(option)
+
+    _append_option(primary_terms, is_primary=True)
+    for candidate in ranked_options:
+        if isinstance(candidate, str):
+            _append_option([candidate], is_primary=False)
+
+    return options
+
+
 def _load_claim_set_by_signature(session, signature: str | None) -> ProcessedClaimSet | None:
     if not signature:
         return None
@@ -285,7 +395,6 @@ def _build_refresh_prompt(session, claim_set: ProcessedClaimSet | None) -> dict 
         "refreshed_at": latest_refreshed_at,
     }
 
-
 def _slugify_label(label: str) -> str:
     base = str(label or "").lower()
     base = re.sub(r"[^a-z0-9]+", "-", base)
@@ -314,6 +423,8 @@ def _canonicalize_drug_label(label: str) -> tuple[str, str]:
                 return slug, display
     slug = _slugify_label(label)
     return slug, label
+
+
 def _build_claim_catalog(
     claim_set: ProcessedClaimSet | None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -661,14 +772,14 @@ def index() -> str:
 
 @ui_blueprint.get("/runs")
 def runs() -> str:
-    session = _get_db_session()
+    db_session = _get_db_session()
 
     stmt = (
         select(ClaimSetRefresh)
         .order_by(ClaimSetRefresh.updated_at.desc(), ClaimSetRefresh.created_at.desc())
         .limit(50)
     )
-    refreshes = session.execute(stmt).scalars().all()
+    refreshes = db_session.execute(stmt).scalars().all()
 
     entries: list[dict[str, object]] = []
     for refresh in refreshes:
@@ -684,21 +795,21 @@ def runs() -> str:
         }
         entries.append(entry)
 
-    return render_template("ui/runs.html", runs=entries)
+    return render_template("ui/runs.html", runs=entries, recent=_get_user_recent_searches())
 
 
 @ui_blueprint.post("/search")
 def search() -> tuple[str, int]:
-    session = _get_db_session()
+    db_session = _get_db_session()
     condition = (request.form.get("condition") or "").strip()
 
     if not condition:
         return render_template("ui/_error_message.html", message="Condition is required"), 400
 
-    cached_resolution = _load_cached_resolution(session, condition)
+    cached_resolution = _load_cached_resolution(db_session, condition)
     if cached_resolution is not None:
         mesh_signature = cached_resolution.mesh_signature or compute_mesh_signature(list(cached_resolution.mesh_terms))
-        claim_set = _load_claim_set_by_signature(session, mesh_signature)
+        claim_set = _load_claim_set_by_signature(db_session, mesh_signature)
         if claim_set is not None and claim_set.get_active_version() is not None:
             claim_entries, drug_filters = _build_claim_catalog(claim_set)
             resolved_terms = _determine_mesh_terms(
@@ -706,12 +817,19 @@ def search() -> tuple[str, int]:
                 resolution=cached_resolution,
                 mesh_signature=mesh_signature,
             )
+            _record_user_search(
+                condition,
+                cached_resolution.normalized_condition,
+                resolved_terms,
+                mesh_signature=mesh_signature,
+                claim_set_id=claim_set.id,
+            )
             context = {
                 "claim_set": claim_set,
                 "resolution": cached_resolution,
                 "completed": True,
                 "claims_url": url_for("ui.view_claims", claim_set_id=claim_set.id),
-                "refresh_prompt": _build_refresh_prompt(session, claim_set),
+                "refresh_prompt": _build_refresh_prompt(db_session, claim_set),
                 "claim_entries": claim_entries,
                 "drug_filters": drug_filters,
                 "resolved_mesh_terms": resolved_terms,
@@ -719,14 +837,30 @@ def search() -> tuple[str, int]:
             return _render_claims_response(context)
 
     preview = preview_mesh_resolution(condition)
-    if preview.status == "needs_clarification":
-        return render_template("ui/_mesh_selector.html", condition=condition, preview=preview), 200
+    if preview.status == "needs_clarification" and cached_resolution is None:
+        options = _build_mesh_options(
+            db_session,
+            condition=condition,
+            primary_terms=preview.mesh_terms,
+            ranked_options=preview.ranked_options,
+        )
+        primary_option = next((opt for opt in options if opt.get("is_primary")), None)
+        alternate_options = [opt for opt in options if not opt.get("is_primary")]
+        return render_template(
+            "ui/_mesh_selector.html",
+            condition=condition,
+            preview=preview,
+            options=options,
+            primary_option=primary_option,
+            alternate_options=alternate_options,
+            recent=_get_user_recent_searches(),
+        ), 200
     if preview.status == "not_found":
         message = "No MeSH terms matched the supplied condition. Please refine your query."
         return render_template("ui/_error_message.html", message=message), 422
 
     try:
-        resolution = resolve_condition_via_nih(condition, session=session)
+        resolution = resolve_condition_via_nih(condition, session=db_session)
     except MeshTermsNotFoundError as exc:
         current_app.logger.info(
             "Mesh resolution failed during UI search",
@@ -745,8 +879,14 @@ def search() -> tuple[str, int]:
         return render_template("ui/_mesh_selector.html", condition=condition, preview=options), 200
 
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
+    _record_user_search(
+        condition,
+        resolution.normalized_condition,
+        list(resolution.mesh_terms),
+        mesh_signature=mesh_signature,
+    )
     job_info = enqueue_claim_pipeline(
-        session=session,
+        session=db_session,
         resolution=resolution,
         condition_label=condition,
         mesh_signature=mesh_signature,
@@ -776,9 +916,81 @@ def search() -> tuple[str, int]:
     return _render_progress_response(context)
 
 
+@ui_blueprint.post("/search-preview")
+def search_preview() -> tuple[str, int]:
+    db_session = _get_db_session()
+    condition = (request.form.get("condition") or "").strip()
+
+    if not condition:
+        return render_template("ui/_error_message.html", message="Condition is required"), 400
+
+    cached_resolution = _load_cached_resolution(db_session, condition)
+    allow_refresh = cached_resolution is None
+    preview_raw = preview_mesh_resolution(condition)
+
+    primary_terms: list[str]
+    if cached_resolution is not None:
+        primary_terms = list(cached_resolution.mesh_terms)
+        preview = MeshResolutionPreview(
+            status=preview_raw.status,
+            raw_query=condition,
+            normalized_query=cached_resolution.normalized_condition,
+            mesh_terms=list(primary_terms),
+            ranked_options=preview_raw.ranked_options or list(primary_terms),
+            suggestions=preview_raw.suggestions,
+            espell_correction=preview_raw.espell_correction,
+        )
+    else:
+        primary_terms = list(preview_raw.mesh_terms)
+        preview = preview_raw
+
+    if preview.status == "not_found":
+        message = "No MeSH terms matched the supplied condition. Please refine your query."
+        return render_template("ui/_error_message.html", message=message), 422
+
+    if preview.status == "needs_clarification" and cached_resolution is None:
+        options = _build_mesh_options(
+            db_session,
+            condition=condition,
+            primary_terms=primary_terms,
+            ranked_options=preview.ranked_options,
+        )
+        primary_option = next((opt for opt in options if opt.get("is_primary")), None)
+        alternate_options = [opt for opt in options if not opt.get("is_primary")]
+        return render_template(
+            "ui/_mesh_selector.html",
+            condition=condition,
+            preview=preview,
+            options=options,
+            primary_option=primary_option,
+            alternate_options=alternate_options,
+            recent=_get_user_recent_searches(),
+        ), 200
+
+    options = _build_mesh_options(
+        db_session,
+        condition=condition,
+        primary_terms=primary_terms,
+        ranked_options=preview.ranked_options,
+    )
+    primary_option = next((opt for opt in options if opt.get("is_primary")), None)
+    alternate_options = [opt for opt in options if not opt.get("is_primary")]
+
+    return render_template(
+        "ui/_search_confirmation.html",
+        condition=condition,
+        preview=preview,
+        options=options,
+        primary_option=primary_option,
+        alternate_options=alternate_options,
+        allow_refresh=allow_refresh,
+        recent=_get_user_recent_searches(),
+    ), 200
+
+
 @ui_blueprint.post("/mesh-select")
 def mesh_select() -> tuple[str, int]:
-    session = _get_db_session()
+    db_session = _get_db_session()
     condition = (request.form.get("condition") or "").strip()
     selected_terms = [value.strip() for value in request.form.getlist("mesh_term") if value and value.strip()]
 
@@ -790,14 +1002,20 @@ def mesh_select() -> tuple[str, int]:
     manual_builder = _manual_mesh_builder(selected_terms)
 
     try:
-        resolution = resolve_condition_via_nih(condition, session=session, mesh_builder=manual_builder)
+        resolution = resolve_condition_via_nih(condition, session=db_session, mesh_builder=manual_builder)
     except MeshTermsNotFoundError:
         message = "Unable to resolve the selected MeSH terms. Please try a different option."
         return render_template("ui/_error_message.html", message=message), 422
 
     mesh_signature = compute_mesh_signature(list(resolution.mesh_terms))
+    _record_user_search(
+        condition,
+        resolution.normalized_condition,
+        list(resolution.mesh_terms),
+        mesh_signature=mesh_signature,
+    )
     job_info = enqueue_claim_pipeline(
-        session=session,
+        session=db_session,
         resolution=resolution,
         condition_label=condition,
         mesh_signature=mesh_signature,

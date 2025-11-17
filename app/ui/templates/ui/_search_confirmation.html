@@ -1,0 +1,117 @@
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h5 mb-3">Confirm search</h2>
+    <p class="text-muted mb-3">We will refresh claims for "{{ condition }}" using the normalized query <span class="fw-semibold">{{ preview.normalized_query }}</span>.</p>
+    {% if preview.espell_correction %}
+    <div class="alert alert-info py-2 small mb-3">
+      Suggested spelling: {{ preview.espell_correction }}
+    </div>
+    {% endif %}
+    {% if preview.mesh_terms %}
+    <div class="mb-3">
+      <div class="fw-semibold small text-uppercase text-muted mb-1">Resolved MeSH term{% if preview.mesh_terms|length != 1 %}s{% endif %}</div>
+      <div class="d-flex flex-wrap gap-2">
+        {% for term in preview.mesh_terms %}
+        <span class="badge text-bg-light text-dark border">{{ term }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% if preview.ranked_options and preview.ranked_options != preview.mesh_terms %}
+    <div class="small text-muted mb-3">
+      Other ranked options: {{ preview.ranked_options | join(', ') }}
+    </div>
+    {% endif %}
+    <div class="d-flex justify-content-end flex-wrap gap-2">
+      {% if primary_option and primary_option.status_url %}
+      <a class="btn btn-outline-secondary" href="{{ primary_option.claims_url or primary_option.status_url }}">
+        {% if primary_option.has_claims %}View completed search{% else %}View status{% endif %}
+      </a>
+      {% endif %}
+      {% if allow_refresh %}
+      <form
+        hx-post="/ui/search"
+        hx-target="#results"
+        hx-swap="innerHTML"
+        hx-disabled-elt="button[type=submit]"
+        class="d-inline"
+      >
+        <input type="hidden" name="condition" value="{{ condition }}">
+        <button type="submit" class="btn btn-primary">Run refresh</button>
+      </form>
+      {% endif %}
+    </div>
+    {% if not allow_refresh %}
+    <p class="text-muted small mb-0 mt-2">Cached results are still current. Choose a different MeSH term below if you want to run a new search.</p>
+    {% endif %}
+  </div>
+</div>
+{% if alternate_options %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <h3 class="h6 mb-3">Other matching MeSH terms</h3>
+    <div class="vstack gap-3">
+      {% for option in alternate_options %}
+      <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+        <div>
+          <div class="fw-semibold">{{ option.label }}</div>
+          <div class="text-muted small">
+            {% if option.has_claims %}
+            Completed search available
+            {% else %}
+            No completed search yet
+            {% endif %}
+          </div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          {% if option.status_url %}
+          <a class="btn btn-outline-secondary btn-sm" href="{{ option.claims_url or option.status_url }}">
+            {% if option.has_claims %}View completed search{% else %}View status{% endif %}
+          </a>
+          {% endif %}
+          <form
+            hx-post="/ui/mesh-select"
+            hx-target="#results"
+            hx-swap="innerHTML"
+            hx-disabled-elt="button[type=submit]"
+            class="d-inline"
+          >
+            <input type="hidden" name="condition" value="{{ condition }}">
+            {% for term in option.mesh_terms %}
+            <input type="hidden" name="mesh_term" value="{{ term }}">
+            {% endfor %}
+            <button type="submit" class="btn btn-primary btn-sm">Search with this term</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+{% if recent %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <h3 class="h6 mb-2">Your recent searches</h3>
+    {% if recent %}
+    <ul class="list-unstyled small mb-0">
+      {% for entry in recent[:5] %}
+      <li class="mb-1">
+        {% set link = entry.claims_url or entry.status_url %}
+  {% if link %}
+  <a class="fw-semibold text-decoration-none" href="{{ link }}">{{ entry.query }}</a>
+        {% else %}
+        <span class="fw-semibold">{{ entry.query }}</span>
+        {% endif %}
+        {% if entry.mesh_terms %}
+        <span class="text-muted">&mdash; {{ entry.mesh_terms | join(', ') }}</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted small mb-0">No previous searches recorded this session.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}

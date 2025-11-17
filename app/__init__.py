@@ -46,6 +46,9 @@ def create_app(
     if config:
         app.config.from_mapping(config)  # type: ignore[arg-type]
 
+    if not app.config.get("SECRET_KEY"):
+        app.config["SECRET_KEY"] = "change-me"
+
     app.config.setdefault(
         "SEARCH_REFRESH_TTL_SECONDS",
         DEFAULT_SEARCH_REFRESH_TTL_SECONDS,

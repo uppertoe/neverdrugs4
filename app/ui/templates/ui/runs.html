@@ -11,58 +11,88 @@
   <a class="btn btn-primary" href="{{ url_for('ui.index') }}">Start new search</a>
 </div>
 
-{% if runs %}
-<div class="table-responsive">
-  <table class="table table-sm align-middle">
-    <thead class="table-light">
-      <tr>
-        <th scope="col">Status</th>
-        <th scope="col">Condition signature</th>
-        <th scope="col">Last update</th>
-        <th scope="col">Details</th>
-        <th scope="col" class="text-end">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for run in runs %}
-      {% set status = run.status|default('queued') %}
-      {% set details = run.details if run.details is mapping else {} %}
-      <tr>
-        <td>
-          <span class="badge text-uppercase bg-{% if status == 'completed' %}success{% elif status in ['failed', 'no-batches', 'no-responses'] %}warning{% else %}secondary{% endif %}">
-            {{ status.replace('_', ' ') }}
-          </span>
-        </td>
-        <td class="text-break">
-          {{ run.mesh_signature or 'Unknown' }}
-        </td>
-        <td>
-          {% if run.updated_at %}
-          {{ run.updated_at.strftime('%Y-%m-%d %H:%M %Z') }}
-          {% else %}
-          &mdash;
-          {% endif %}
-        </td>
-        <td class="small">
-          {% if details.description %}
-          <div>{{ details.description }}</div>
-          {% elif details.reason %}
-          <div>{{ details.reason | replace('_', ' ') }}</div>
-          {% else %}
-          <span class="text-muted">&mdash;</span>
-          {% endif %}
-        </td>
-        <td class="text-end">
-          {% if run.mesh_signature %}
-          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('ui.status', job_ref=run.mesh_signature) }}">View status</a>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="row g-4">
+  <div class="col-xl-8">
+    {% if runs %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead class="table-light">
+          <tr>
+            <th scope="col">Status</th>
+            <th scope="col">Condition signature</th>
+            <th scope="col">Last update</th>
+            <th scope="col">Details</th>
+            <th scope="col" class="text-end">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+          {% set status = run.status|default('queued') %}
+          {% set details = run.details if run.details is mapping else {} %}
+          <tr>
+            <td>
+              <span class="badge text-uppercase bg-{% if status == 'completed' %}success{% elif status in ['failed', 'no-batches', 'no-responses'] %}warning{% else %}secondary{% endif %}">
+                {{ status.replace('_', ' ') }}
+              </span>
+            </td>
+            <td class="text-break">
+              {{ run.mesh_signature or 'Unknown' }}
+            </td>
+            <td>
+              {% if run.updated_at %}
+              {{ run.updated_at.strftime('%Y-%m-%d %H:%M %Z') }}
+              {% else %}
+              &mdash;
+              {% endif %}
+            </td>
+            <td class="small">
+              {% if details.description %}
+              <div>{{ details.description }}</div>
+              {% elif details.reason %}
+              <div>{{ details.reason | replace('_', ' ') }}</div>
+              {% else %}
+              <span class="text-muted">&mdash;</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              {% if run.mesh_signature %}
+              <a class="btn btn-outline-primary btn-sm" href="{{ url_for('ui.status', job_ref=run.mesh_signature) }}">View status</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted">No pipeline runs recorded yet.</p>
+    {% endif %}
+  </div>
+  <div class="col-xl-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h6 text-uppercase text-muted mb-3">Your recent searches</h2>
+        {% if recent %}
+        <ul class="list-unstyled small mb-0">
+          {% for entry in recent %}
+          <li class="mb-2">
+            {% set link = entry.claims_url or entry.status_url %}
+            {% if link %}
+            <div class="fw-semibold"><a class="text-decoration-none" href="{{ link }}">{{ entry.query }}</a></div>
+            {% else %}
+            <div class="fw-semibold">{{ entry.query }}</div>
+            {% endif %}
+            {% if entry.mesh_terms %}
+            <div class="text-muted">{{ entry.mesh_terms | join(', ') }}</div>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-muted small mb-0">Searches you run during this session will appear here.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
 </div>
-{% else %}
-<p class="text-muted">No pipeline runs recorded yet.</p>
-{% endif %}
 {% endblock %}

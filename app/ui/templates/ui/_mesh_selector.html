@@ -1,18 +1,73 @@
 <div class="card shadow-sm">
   <div class="card-body">
     <h2 class="h5 mb-3">Select MeSH term</h2>
-    <p class="text-muted">We found multiple matching descriptors for "{{ condition }}". Please choose the best fit.</p>
-    <form hx-post="/ui/mesh-select" hx-target="#results" hx-swap="innerHTML" class="vstack gap-2">
-      {% for option in preview.ranked_options %}
-      <div class="form-check">
-        <input class="form-check-input" type="radio" name="mesh_term" id="mesh-option-{{ loop.index }}" value="{{ option }}" {% if loop.first %}checked{% endif %}>
-        <label class="form-check-label" for="mesh-option-{{ loop.index }}">{{ option }}</label>
+    <p class="text-muted">We found multiple matching descriptors for "{{ condition }}". Choose to view existing results or run a new search.</p>
+    <div class="vstack gap-3">
+      {% for option in options %}
+      <div class="border rounded p-3 d-flex justify-content-between align-items-start flex-wrap gap-3">
+        <div>
+          <div class="fw-semibold">
+            {{ option.label }}
+            {% if option.is_primary %}
+            <span class="badge text-bg-secondary ms-2">Recommended</span>
+            {% endif %}
+          </div>
+          <div class="text-muted small">
+            {% if option.has_claims %}
+            Completed search available
+            {% else %}
+            No completed search yet
+            {% endif %}
+          </div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          {% if option.status_url %}
+          <a class="btn btn-outline-secondary btn-sm" href="{{ option.claims_url or option.status_url }}">
+            {% if option.has_claims %}View completed search{% else %}View status{% endif %}
+          </a>
+          {% endif %}
+          <form
+            hx-post="/ui/mesh-select"
+            hx-target="#results"
+            hx-swap="innerHTML"
+            hx-disabled-elt="button[type=submit]"
+            class="d-inline"
+          >
+            <input type="hidden" name="condition" value="{{ condition }}">
+            {% for term in option.mesh_terms %}
+            <input type="hidden" name="mesh_term" value="{{ term }}">
+            {% endfor %}
+            <button type="submit" class="btn btn-primary btn-sm">Search with this term</button>
+          </form>
+        </div>
       </div>
       {% endfor %}
-      <input type="hidden" name="condition" value="{{ condition }}">
-      <div class="d-flex justify-content-end gap-2 pt-2">
-        <button type="submit" class="btn btn-primary">Confirm selection</button>
-      </div>
-    </form>
+    </div>
   </div>
 </div>
+{% if recent %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <h3 class="h6 mb-2">Your recent searches</h3>
+    {% if recent %}
+    <ul class="list-unstyled small mb-0">
+      {% for entry in recent[:5] %}
+      <li class="mb-1">
+        {% set link = entry.claims_url or entry.status_url %}
+  {% if link %}
+  <a class="fw-semibold text-decoration-none" href="{{ link }}">{{ entry.query }}</a>
+        {% else %}
+        <span class="fw-semibold">{{ entry.query }}</span>
+        {% endif %}
+        {% if entry.mesh_terms %}
+        <span class="text-muted">&mdash; {{ entry.mesh_terms | join(', ') }}</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted small mb-0">No previous searches recorded this session.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
