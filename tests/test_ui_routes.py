@@ -165,6 +165,15 @@ def test_ui_search_preview_with_cached_claims_returns_results(client, session, m
     )
 
     monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: resolution)
+    preview = MeshResolutionPreview(
+        status="resolved",
+        raw_query="King Denborough",
+        normalized_query="king denborough",
+        mesh_terms=list(mesh_terms),
+        ranked_options=list(mesh_terms),
+        suggestions=[],
+    )
+    monkeypatch.setattr("app.ui.routes.preview_mesh_resolution", lambda _condition: preview)
 
     response = client.post(
         "/ui/search-preview",
@@ -346,6 +355,15 @@ def test_ui_search_preview_uses_cached_resolution(client, monkeypatch):
         search_term_id=123,
     )
     monkeypatch.setattr("app.ui.routes._load_cached_resolution", lambda _session, _condition: resolution)
+    preview = MeshResolutionPreview(
+        status="resolved",
+        raw_query="Hypertension",
+        normalized_query="hypertension",
+        mesh_terms=["Hypertension"],
+        ranked_options=["Hypertension"],
+        suggestions=[],
+    )
+    monkeypatch.setattr("app.ui.routes.preview_mesh_resolution", lambda _condition: preview)
 
     response = client.post(
         "/ui/search-preview",

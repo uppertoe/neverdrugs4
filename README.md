@@ -10,16 +10,17 @@ Clinical evidence aggregation service that normalises NIH search terms, collects
 - **LLM Integration**: `OpenAIChatClient` streams batches to OpenAI Responses API (defaults to `gpt-5-mini`).
 
 ## Quick Start (Docker)
-1. Export any required secrets (at minimum `OPENAI_API_KEY`).
+1. Copy the example environment file and fill in real credentials:
    ```sh
-   export OPENAI_API_KEY="sk-..."
+   cp .env.example .env
+   # edit .env to add real keys (SECRET_KEY must be a long random string in production)
    ```
 2. Build and launch the stack:
    ```sh
-   docker compose up --build
+   docker compose -f deployment/docker-compose.yml up --build
    ```
 3. The API listens on `http://localhost:8000`. The entrypoint runs `alembic upgrade head` before starting.
-4. Stop the stack with `docker compose down`. Add `--volumes` to wipe Postgres data.
+4. Stop the stack with `docker compose -f deployment/docker-compose.yml down`. Add `--volumes` to wipe Postgres data.
 
 ## Local Development Without Docker
 1. Create and activate a virtual environment for Python 3.11+.
@@ -52,8 +53,12 @@ Clinical evidence aggregation service that normalises NIH search terms, collects
 | `REDIS_URL` | Redis connection for Celery shortcuts | `redis://redis:6379/0` |
 | `CELERY_BROKER_URL` | Celery broker URL | `REDIS_URL` |
 | `CELERY_RESULT_BACKEND` | Celery result backend | `CELERY_BROKER_URL` |
+| `SECRET_KEY` | Flask session & CSRF signing key | _required in production_ |
 | `CELERY_RESULT_TTL` | Celery result expiry (seconds) | `3600` |
+| `NIH_CONTACT_EMAIL` | Email registered with the NIH API | `DEFAULT_NIH_CONTACT_EMAIL` in code |
+| `NIH_API_KEY` / `NCBI_API_KEY` | API key for NIH/NCBI requests | _recommended_ |
 | `OPENAI_API_KEY` | API key for OpenAI Responses API | _required_ |
+| `FLASK_ENV` / `FLASK_DEBUG` | Runtime mode and debug toggles | `production` / `0` |
 | `SEARCH_REFRESH_TTL_SECONDS` | Cache TTL before forcing NIH refresh | `604800` (7 days) |
 | `REFRESH_JOB_STALE_SECONDS` | Override for detecting stalled running jobs | `300` |
 | `REFRESH_JOB_STALE_QUEUE_SECONDS` | Override for detecting stalled queued jobs | `60` |
@@ -135,7 +140,8 @@ Return snippet-level evidence with cue metadata tied to the corresponding articl
 - `app/services/` – NIH search, LLM batching, persistence helpers.
 - `app/tasks.py` – Celery task entrypoints.
 - `migrations/` – Alembic environment and revisions.
-- `scripts/` – Docker entrypoint and capture utilities.
+- `deployment/` – Docker/Compose definitions, entrypoints, and deployment docs.
+- `scripts/` – Developer utilities.
 - `tests/` – Pytest suites and recorded fixtures.
 - `docs/` – Supplemental design notes.
 

@@ -16,6 +16,25 @@ import app.models  # noqa: F401; ensure models registered with Base.metadata
 from app import create_app
 from app.database import Base
 
+_ENV_VARS_TO_CLEAR = {
+    "NIH_CONTACT_EMAIL",
+    "NIH_API_KEY",
+    "NCBI_API_KEY",
+    "OPENAI_API_KEY",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "CELERY_BROKER_URL",
+    "CELERY_RESULT_BACKEND",
+    "FLASK_ENV",
+    "FLASK_DEBUG",
+    "SECRET_KEY",
+}
+@pytest.fixture(autouse=True)
+def _reset_sensitive_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in _ENV_VARS_TO_CLEAR:
+        monkeypatch.delenv(key, raising=False)
+
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(

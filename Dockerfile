@@ -21,8 +21,9 @@ COPY app ./app
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY scripts ./scripts
+COPY deployment ./deployment
 
-RUN chmod +x scripts/docker-entrypoint.sh
+RUN chmod +x deployment/docker/entrypoint.sh
 
 EXPOSE 8000
 

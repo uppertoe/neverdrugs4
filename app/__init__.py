@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import os
+import secrets
 from typing import Callable, Mapping, Optional
 
 from flask import Flask, Response, jsonify, g, redirect, url_for
@@ -13,6 +16,7 @@ from app.tasks import refresh_claims_for_condition_task
 from app.ui import ui_blueprint
 
 SessionFactory = Callable[[], Session]
+logger = logging.getLogger(__name__)
 
 
 def _enqueue_refresh_via_celery(
@@ -46,8 +50,32 @@ def create_app(
     if config:
         app.config.from_mapping(config)  # type: ignore[arg-type]
 
-    if not app.config.get("SECRET_KEY"):
-        app.config["SECRET_KEY"] = "change-me"
+    env_name = str(app.config.get("ENV") or os.getenv("FLASK_ENV") or "").lower()
+    debug_mode = bool(app.config.get("DEBUG"))
+    testing_mode = bool(app.config.get("TESTING"))
+    is_dev_environment = testing_mode or debug_mode or env_name in {"development", "debug"}
+
+    secret_key = app.config.get("SECRET_KEY")
+    if not secret_key:
+        if is_dev_environment:
+            app.config["SECRET_KEY"] = secrets.token_urlsafe(32)
+            logger.warning("SECRET_KEY not provided; generated ephemeral key for development/testing")
+        else:
+            raise RuntimeError("SECRET_KEY is required in production. Set it via environment or config.")
+    else:
+        insecure_values = {"change-me", "not-set", "your-secret"}
+        if not is_dev_environment and (secret_key in insecure_values or len(str(secret_key)) < 16):
+            raise RuntimeError("SECRET_KEY is not secure enough for production. Provide a stronger value.")
+
+    if not is_dev_environment:
+        app.config.setdefault("SESSION_COOKIE_SECURE", True)
+        app.config.setdefault("REMEMBER_COOKIE_SECURE", True)
+        app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
+        app.config.setdefault("SESSION_COOKIE_SAMESITE", "Strict")
+        app.config.setdefault("PREFERRED_URL_SCHEME", "https")
+    else:
+        # Even in development/testing, keep cookies HTTP-only by default.
+        app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
 
     app.config.setdefault(
         "SEARCH_REFRESH_TTL_SECONDS",

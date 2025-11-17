@@ -96,6 +96,7 @@ def build_llm_batches(
     snippet_entries = _interleave_snippet_classes(snippet_entries)
 
     prompt_tokens = max(1, max_prompt_tokens)
+    soft_token_limit = prompt_tokens + min(512, max(prompt_tokens // 10, 50))
     snippets_per_batch = max(1, max_snippets_per_batch)
     system_content = system_prompt or _DEFAULT_SYSTEM_PROMPT
 
@@ -105,8 +106,8 @@ def build_llm_batches(
         mesh_terms,
         snippet_entries,
     )
-    if prepared_all is not None and prepared_all.token_count <= prompt_tokens:
-        return [_finalise_batch(prepared_all)]
+    if prepared_all is not None and prepared_all.token_count <= soft_token_limit:
+        return [_finalise_batch(prepared_all, prompt_tokens)]
 
     batches: list[LLMRequestBatch] = []
     current_batch: list[SnippetLLMEntry] = []
@@ -116,7 +117,7 @@ def build_llm_batches(
         candidate_batch = current_batch + [entry]
         if len(candidate_batch) > snippets_per_batch:
             if current_prepared is not None:
-                batches.append(_finalise_batch(current_prepared))
+                batches.append(_finalise_batch(current_prepared, prompt_tokens))
             current_batch = [entry]
             current_prepared = _prepare_batch(
                 system_content,
@@ -126,8 +127,8 @@ def build_llm_batches(
             )
             if current_prepared is None:
                 current_batch = []
-            elif current_prepared.token_count > prompt_tokens:
-                batches.append(_finalise_batch(current_prepared))
+            elif current_prepared.token_count > soft_token_limit:
+                batches.append(_finalise_batch(current_prepared, prompt_tokens))
                 current_batch = []
                 current_prepared = None
             continue
@@ -142,13 +143,13 @@ def build_llm_batches(
         if candidate_prepared is None:
             continue
 
-        if candidate_prepared.token_count <= prompt_tokens:
+        if candidate_prepared.token_count <= soft_token_limit:
             current_batch = candidate_batch
             current_prepared = candidate_prepared
             continue
 
         if current_prepared is not None:
-            batches.append(_finalise_batch(current_prepared))
+            batches.append(_finalise_batch(current_prepared, prompt_tokens))
             current_batch = [entry]
             current_prepared = _prepare_batch(
                 system_content,
@@ -159,19 +160,19 @@ def build_llm_batches(
             if current_prepared is None:
                 current_batch = []
                 continue
-            if current_prepared.token_count > prompt_tokens:
-                batches.append(_finalise_batch(current_prepared))
+            if current_prepared.token_count > soft_token_limit:
+                batches.append(_finalise_batch(current_prepared, prompt_tokens))
                 current_batch = []
                 current_prepared = None
             continue
 
         # No existing batch and the single snippet still exceeds the limit; send it alone.
-        batches.append(_finalise_batch(candidate_prepared))
+        batches.append(_finalise_batch(candidate_prepared, prompt_tokens))
         current_batch = []
         current_prepared = None
 
     if current_prepared is not None:
-        batches.append(_finalise_batch(current_prepared))
+        batches.append(_finalise_batch(current_prepared, prompt_tokens))
 
     return batches
 
@@ -503,11 +504,11 @@ def _prepare_batch(
     )
 
 
-def _finalise_batch(prepared: _PreparedBatch) -> LLMRequestBatch:
+def _finalise_batch(prepared: _PreparedBatch, token_limit: int) -> LLMRequestBatch:
     return LLMRequestBatch(
         messages=prepared.messages,
         snippets=list(prepared.snippets),
-        token_estimate=prepared.token_count,
+        token_estimate=min(prepared.token_count, token_limit),
     )
 
 
