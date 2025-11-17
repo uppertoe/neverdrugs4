@@ -23,14 +23,18 @@ def test_initial_migration_creates_core_tables(tmp_path):
     command.upgrade(cfg, "head")
 
     engine = create_engine(db_url, future=True)
-    inspector = inspect(engine)
+    try:
+        with engine.connect() as connection:
+            inspector = inspect(connection)
+            table_names = set(inspector.get_table_names())
+        assert "claim_set_refreshes" in table_names
+        assert "processed_claim_sets" in table_names
+        assert "search_terms" in table_names
 
-    table_names = set(inspector.get_table_names())
-    assert "claim_set_refreshes" in table_names
-    assert "processed_claim_sets" in table_names
-    assert "search_terms" in table_names
-
-    command.downgrade(cfg, "base")
-    inspector = inspect(engine)
-    table_names_post = set(inspector.get_table_names())
-    assert "claim_set_refreshes" not in table_names_post
+        command.downgrade(cfg, "base")
+        with engine.connect() as connection:
+            inspector = inspect(connection)
+            table_names_post = set(inspector.get_table_names())
+        assert "claim_set_refreshes" not in table_names_post
+    finally:
+        engine.dispose()

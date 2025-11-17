@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
@@ -39,11 +40,12 @@ def preview_mesh_resolution(
 
     build_result = builder(normalized_query)
     mesh_terms = list(build_result.mesh_terms)
-    ranked_options = _extract_ranked_terms(build_result)
+    ranked_options = _dedupe_reordered_terms(_extract_ranked_terms(build_result))
 
     if mesh_terms:
         status: MeshResolutionStatus = "resolved" if len(mesh_terms) == 1 else "needs_clarification"
-        options = ranked_options or list(mesh_terms)
+        combined_ranked = _dedupe_reordered_terms(list(mesh_terms) + ranked_options)
+        options = combined_ranked or _dedupe_reordered_terms(mesh_terms)
         return MeshResolutionPreview(
             status=status,
             raw_query=raw_query,
@@ -80,3 +82,30 @@ def _extract_ranked_terms(result: MeshBuildResult) -> list[str]:
         if term and term not in terms:
             terms.append(term)
     return terms
+
+
+def _dedupe_reordered_terms(candidates: Iterable[str]) -> list[str]:
+    seen_signatures: dict[str, str] = {}
+    ordered: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        original = candidate.strip()
+        if not original:
+            continue
+        signature = _term_signature(original)
+        if signature in seen_signatures:
+            continue
+        seen_signatures[signature] = original
+        ordered.append(original)
+    return ordered
+
+
+def _term_signature(term: str) -> str:
+    normalized = normalize_condition(term)
+    if not normalized:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    tokens = cleaned.split()
+    tokens.sort()
+    return " ".join(tokens)

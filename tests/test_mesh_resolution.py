@@ -120,7 +120,6 @@ def test_preview_resolution_with_aliases_resolves_using_canonical() -> None:
     assert preview.mesh_terms == ["Porphyria, Variegate"]
     assert preview.ranked_options == [
         "Porphyria, Variegate",
-        "Variegate Porphyria",
         "Porphyria Variegata",
     ]
     assert preview.suggestions == []

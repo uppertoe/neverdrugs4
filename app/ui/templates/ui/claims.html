@@ -1,0 +1,18 @@
+{% extends "ui/base.html" %}
+
+{% block title %}Claim Results{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="row justify-content-center">
+    <div class="col-lg-10">
+      <div id="results">
+        {% set completed = false %}
+        {% set resolution = none %}
+        {% set claims_url = none %}
+        {% include "ui/_claims_table.html" %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -30,6 +30,10 @@ class SearchResolution:
     mesh_terms: list[str]
     reused_cached: bool
     search_term_id: int
+    mesh_signature: str | None = None
+    result_signature: str | None = None
+    artefact_id: int | None = None
+    artefact_refreshed_at: datetime | None = None
 
 
 def normalize_condition(raw: str) -> str:
@@ -148,11 +152,19 @@ def resolve_search_input(
         # This should not happen, but guard to avoid returning incomplete data
         raise RuntimeError("Failed to resolve or persist MeSH artefact")
 
+    refreshed_at = artefact.last_refreshed_at or artefact.created_at
+    if refreshed_at is not None and refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
+
     return SearchResolution(
         normalized_condition=search_normalized,
         mesh_terms=list(artefact.mesh_terms),
         reused_cached=reused_cached,
         search_term_id=search_term.id,
+        mesh_signature=str(artefact.mesh_signature or ""),
+        result_signature=artefact.result_signature or artefact.mesh_signature,
+        artefact_id=getattr(artefact, "id", None),
+        artefact_refreshed_at=refreshed_at,
     )
 
 

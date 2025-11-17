@@ -381,15 +381,40 @@ def persist_pubmed_articles(
     articles: Sequence[PubMedArticle],
     contents: Dict[str, ArticleContent],
 ) -> list[ArticleArtefact]:
+    if not articles:
+        return []
+
+    # Deduplicate incoming articles while preserving original score ordering.
+    deduped_articles: list[PubMedArticle] = []
+    seen_pmids: set[str] = set()
+    for article in articles:
+        if article.pmid in seen_pmids:
+            continue
+        seen_pmids.add(article.pmid)
+        deduped_articles.append(article)
+
+    if not deduped_articles:
+        return []
+
+    pmid_order = [article.pmid for article in deduped_articles]
+    existing_by_pmid: dict[str, ArticleArtefact] = {}
+    existing_rows = (
+        session.execute(
+            select(ArticleArtefact)
+            .where(ArticleArtefact.search_term_id == search_term_id)
+            .where(ArticleArtefact.pmid.in_(pmid_order))
+        )
+        .scalars()
+        .all()
+    )
+    if existing_rows:
+        existing_by_pmid = {row.pmid: row for row in existing_rows}
+
     persisted: list[ArticleArtefact] = []
-    for rank, article in enumerate(articles, start=1):
+    for rank, article in enumerate(deduped_articles, start=1):
         citation = article.to_citation_dict()
         content = contents.get(article.pmid)
-        stmt = select(ArticleArtefact).where(
-            ArticleArtefact.search_term_id == search_term_id,
-            ArticleArtefact.pmid == article.pmid,
-        )
-        existing = session.execute(stmt).scalar_one_or_none()
+        existing = existing_by_pmid.get(article.pmid)
         if existing is None:
             artefact = ArticleArtefact(
                 search_term_id=search_term_id,
@@ -415,6 +440,7 @@ def persist_pubmed_articles(
             existing.token_estimate = content.token_estimate
             existing.retrieved_at = content.fetched_at
         persisted.append(existing)
+        existing_by_pmid[article.pmid] = existing
 
     session.flush()
     return persisted

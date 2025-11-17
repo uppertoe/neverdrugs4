@@ -179,6 +179,36 @@ def test_mesh_builder_prefers_close_matches() -> None:
     assert top_entry["score"] >= 0.8
 
 
+def test_mesh_builder_prioritises_exact_matches_over_qualifiers() -> None:
+    esearch_xml = _build_esearch(["100100", "100101"])
+    esummary_xml = _build_esummary_response(
+        {
+            "100100": [
+                "Hypertension, Masked",
+                "Masked Hypertension",
+                "Hypertensions, Masked",
+            ],
+            "100101": [
+                "Hypertension",
+                "Hypertension, Essential",
+                "Hypertension, Malignant",
+            ],
+        }
+    )
+    http_client = _SequentialHttpClient([
+        _FakeResponse(esearch_xml),
+        _FakeResponse(esummary_xml),
+    ])
+    builder = NIHMeshBuilder(http_client=http_client, max_terms=6)
+
+    result = builder("hypertension")
+
+    selected_terms = result.query_payload.get("selected_mesh_terms")
+    assert selected_terms
+    assert selected_terms[0] == "Hypertension"
+    assert "Hypertension" in result.mesh_terms
+
+
 def test_mesh_builder_handles_docsum_v2_schema() -> None:
     esearch_xml = """<?xml version='1.0' encoding='UTF-8'?>
 <eSearchResult>

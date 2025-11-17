@@ -105,11 +105,19 @@ def _load_cached_resolution(session, raw_condition: str) -> SearchResolution | N
     if artefact is None:
         return None
 
+    refreshed_at = artefact.last_refreshed_at or artefact.created_at
+    if refreshed_at is not None and refreshed_at.tzinfo is None:
+        refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
+
     return SearchResolution(
         normalized_condition=term.canonical,
         mesh_terms=list(artefact.mesh_terms),
         reused_cached=True,
         search_term_id=term.id,
+        mesh_signature=str(artefact.mesh_signature or ""),
+        result_signature=artefact.result_signature or artefact.mesh_signature,
+        artefact_id=getattr(artefact, "id", None),
+        artefact_refreshed_at=refreshed_at,
     )
 
 

@@ -64,9 +64,9 @@ class NIHMeshBuilder:
         http_client: Optional[httpx.Client] = None,
         base_url: str = NIH_BASE_URL,
         database: str = "mesh",
-        retmax: int = 5,
+        retmax: int = 15,
         timeout_seconds: float = 5.0,
-        max_terms: int = 5,
+        max_terms: int = 8,
         disallowed_extra_tokens: Optional[set[str]] = None,
         require_primary_token: bool = True,
         contact_email: str | None = None,
@@ -75,7 +75,7 @@ class NIHMeshBuilder:
         self._http_client = http_client
         self.base_url = base_url.rstrip("/")
         self.database = database
-        self.retmax = retmax
+        self.retmax = max(5, retmax)
         self.timeout_seconds = timeout_seconds
         self.max_terms = max_terms
         self.disallowed_extra_tokens = (
@@ -407,6 +407,10 @@ class NIHMeshBuilder:
                 score += 0.02
             if "becker" in tokens and "becker" not in query_tokens:
                 score -= 0.2
+            if query_tokens and tokens == query_tokens:
+                score += 0.6
+            elif query_tokens and query_tokens.issubset(tokens):
+                score += 0.15
             ranked.append(
                 _RankedTerm(
                     term=term,

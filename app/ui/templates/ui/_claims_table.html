@@ -1,0 +1,202 @@
+{% set active_version = claim_set.get_active_version() %}
+{% set claim_entries = claim_entries if claim_entries is defined else [] %}
+{% set drug_filters = drug_filters if drug_filters is defined else [] %}
+{% set resolved_mesh_terms = resolved_mesh_terms if resolved_mesh_terms is defined else [] %}
+{% set has_claims = claim_entries|length > 0 %}
+{% if completed %}
+<div id="toast-container" class="toast-container position-fixed top-0 end-0 p-3" hx-swap-oob="true">
+  <div class="toast align-items-center text-bg-success border-0 show" role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="d-flex">
+      <div class="toast-body">
+        Claims refreshed successfully. Latest results are now displayed below.
+        {% if claims_url is defined and claims_url %}
+        <div class="mt-2">
+          <a href="{{ claims_url }}" class="link-light link-underline-opacity-0">Open full result page</a>
+        </div>
+        {% endif %}
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% if active_version %}
+<div class="card shadow-sm">
+  <div class="card-body">
+    {% if completed %}
+    <div class="alert alert-success" role="alert">
+      Claims refreshed successfully. Review the updated evidence below.
+      {% if claims_url is defined and claims_url %}
+      <div class="mt-2">
+        <a href="{{ claims_url }}" class="link-success">Open the dedicated results page</a>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if refresh_prompt %}
+    <div class="alert alert-info d-flex flex-column flex-lg-row gap-3 justify-content-between align-items-lg-center" role="alert">
+      <div>
+        <strong>New research available.</strong>
+        <span class="ms-1">{{ refresh_prompt.message }}</span>
+        {% if refresh_prompt.refreshed_at %}
+        <div class="small text-muted mt-1">Article search updated {{ refresh_prompt.refreshed_at.strftime('%Y-%m-%d %H:%M %Z') }}</div>
+        {% endif %}
+      </div>
+      {% if refresh_prompt.job_ref %}
+      <div class="d-flex gap-2 align-self-start align-self-lg-center">
+        <button
+          type="button"
+          class="btn btn-outline-primary"
+          hx-post="{{ url_for('ui.retry', job_ref=refresh_prompt.job_ref) }}"
+          hx-target="#results"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this"
+        >Run refresh</button>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="d-flex justify-content-between align-items-start mb-4">
+      <div>
+        <h2 class="h4 mb-1">{{ claim_set.condition_label }}</h2>
+        <div class="small text-muted mb-0">MeSH signature: {{ claim_set.mesh_signature }}</div>
+        {% if resolved_mesh_terms %}
+        <div class="small text-muted mt-2">
+          <span class="fw-semibold">Resolved MeSH term{% if resolved_mesh_terms|length != 1 %}s{% endif %}:</span>
+          {% for term in resolved_mesh_terms %}
+          <span class="badge text-bg-light text-dark border">{{ term }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% if resolution and resolution.reused_cached %}
+      <span class="badge bg-success align-self-center">Cached</span>
+      {% endif %}
+    </div>
+  <div id="claim-results" class="d-flex flex-column gap-4" data-claim-filter-container>
+      {% if drug_filters %}
+      <div class="card border-0 bg-body-tertiary shadow-sm">
+        <div class="card-body py-3">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+              <h3 class="h6 text-uppercase text-muted mb-1">Filter by drug</h3>
+              <div class="small text-muted" data-filter-summary>Showing all claims</div>
+            </div>
+            <button type="button" class="btn btn-link btn-sm p-0" data-filter-action="clear">Clear filters</button>
+          </div>
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% for drug in drug_filters %}
+            <input
+              type="checkbox"
+              class="btn-check drug-filter-option"
+              id="drug-filter-{{ drug.slug }}"
+              value="{{ drug.slug }}"
+              autocomplete="off"
+            >
+            <label class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-2" for="drug-filter-{{ drug.slug }}">
+              <span>{{ drug.name }}</span>
+              <span class="badge bg-{{ drug.severity.badge }} text-uppercase">{{ drug.severity.label }}</span>
+              <span class="badge bg-light text-dark border">{{ drug.claim_count }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if has_claims %}
+      <div class="d-flex flex-column gap-4" data-claim-list>
+        {% for claim in claim_entries %}
+        {% set accordion_id = claim.anchor_id ~ '-evidence' %}
+        <article
+          id="{{ claim.anchor_id }}"
+          class="p-3 border rounded shadow-sm bg-body"
+          data-claim-entry
+          data-drugs="{{ claim.drug_slugs | join(' ') }}"
+        >
+          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <span class="badge bg-{{ claim.severity.badge }} text-uppercase">{{ claim.severity.label }}</span>
+            {% if claim.classification %}
+            <span class="badge bg-light text-dark border">{{ claim.classification }}</span>
+            {% endif %}
+            {% if claim.confidence %}
+            <span class="badge bg-secondary text-uppercase">Confidence: {{ claim.confidence }}</span>
+            {% endif %}
+          </div>
+          <p class="mb-3">{{ claim.summary }}</p>
+          <div class="small text-muted mb-2">
+            <span class="fw-semibold">Drugs:</span> {{ claim.drugs | join(', ') }}
+          </div>
+          {% if claim.drug_classes %}
+          <div class="small text-muted mb-2">
+            <span class="fw-semibold">Classes:</span> {{ claim.drug_classes | join(', ') }}
+          </div>
+          {% endif %}
+          {% if claim.severe_flag %}
+          <div class="alert alert-danger py-2 small mb-3">
+            <strong>Severe reaction reported.</strong>
+            {% if claim.severe_terms %}
+            <span class="ms-1">Related terms: {{ claim.severe_terms | join(', ') }}</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          <div class="accordion" id="accordion-{{ accordion_id }}">
+            <div class="accordion-item">
+              <h3 class="accordion-header" id="heading-{{ accordion_id }}">
+                <button
+                  class="accordion-button collapsed"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#collapse-{{ accordion_id }}"
+                  aria-expanded="false"
+                  aria-controls="collapse-{{ accordion_id }}"
+                >Supporting citations ({{ claim.evidence | length }})</button>
+              </h3>
+              <div
+                id="collapse-{{ accordion_id }}"
+                class="accordion-collapse collapse"
+                aria-labelledby="heading-{{ accordion_id }}"
+              >
+                <div class="accordion-body">
+                  {% if claim.evidence %}
+                  <ul class="list-unstyled mb-0">
+                    {% for evidence in claim.evidence %}
+                    <li class="mb-3">
+                      <div class="fw-semibold">{{ evidence.article_title or ('PMID ' ~ evidence.pmid) or 'Citation' }}</div>
+                      {% if evidence.key_points %}
+                      <ul class="small ps-3 mb-1">
+                        {% for point in evidence.key_points %}
+                        <li>{{ point }}</li>
+                        {% endfor %}
+                      </ul>
+                      {% endif %}
+                      <div class="small text-muted">
+                        {% if evidence.pmid %}PMID: {{ evidence.pmid }}{% endif %}
+                        {% if evidence.citation_url %}
+                        {% if evidence.pmid %} · {% endif %}
+                        <a href="{{ evidence.citation_url }}" target="_blank" rel="noopener">View source</a>
+                        {% endif %}
+                      </div>
+                    </li>
+                    {% endfor %}
+                  </ul>
+                  {% else %}
+                  <p class="text-muted mb-0">No supporting citations recorded.</p>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-muted mb-0">No drug-linked claims available for this condition.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<p class="text-muted">No active claims available for this condition.</p>
+{% endif %}
+

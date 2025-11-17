@@ -19,7 +19,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are a clinical evidence synthesis assistant. Analyse the supplied snippets and claim groups before constructing cross-drug findings. "
     "When assessing each claim, draft a concise internal checklist (3-7 bullet points) covering the verification steps you will perform, then silently execute it. "
     "Focus on causality and therapeutic intent, cite only the provided article_ids, and keep reasoning grounded in the text. "
-    "After each classification, briefly validate your decision against the cited evidence; self-correct if the validation fails, but do not include the checklist or validation in the JSON output. "
+    "Reject any conclusions where the risk or advisory is inherent to the drug and unrelated to the target condition, and call out gaps when the evidence does not tie the effect to that condition. "
+    "After each classification, briefly validate your decision against the cited evidence; confirm the condition link, self-correct if the validation fails, but do not include the checklist or validation in the JSON output. "
     "Identify idiosyncratic reactions explicitly when the evidence supports them, and do not infer facts beyond those presented."
 )
 _SNIPPET_METADATA_TOKENS = 18
@@ -337,13 +338,14 @@ def _render_user_prompt(
 
     instruction_block = (
         "INSTRUCTIONS\n"
-    "1. Review DRUGS IN SCOPE and emit a drug entry for each listed drug; copy the name exactly, keep the provided class labels, include our ATC codes (or add only when the text clearly justifies it), and list the claim_ids you produce for that drug (leave the list empty when evidence is insufficient). Never reference a drug in any claim unless you have supplied a matching entry in the drugs array. When handling neuromuscular blockers, prefer precise families (depolarising, aminosteroid, benzylisoquinolinium) instead of the generic class unless the evidence is indistinct.\n"
+        "1. Review DRUGS IN SCOPE and emit a drug entry for each listed drug; copy the name exactly, keep the provided class labels, include our ATC codes (or add only when the text clearly justifies it), and list the claim_ids you produce for that drug (leave the list empty when evidence is insufficient). Never reference a drug in any claim unless you have supplied a matching entry in the drugs array. When handling neuromuscular blockers, prefer precise families (depolarising, aminosteroid, benzylisoquinolinium) instead of the generic class unless the evidence is indistinct.\n"
         "2. Build shared findings (risk | safety | uncertain | nuanced) using only the supplied evidence, keep summaries factual, cite every supporting article_id, and attach all relevant drug_ids—even when a snippet mentions several drugs.\n"
-        "3. Do not fabricate claims for drugs with insufficient evidence; it is acceptable for a drug to have zero claims.\n"
-        "4. Use the article_id identifiers we provide—cite an article once even if multiple snippets support it, never invent IDs, and flag unresolved citations in the claim summary if an article_id is missing.\n"
-        "5. Detect idiosyncratic reactions yourself; when evidence shows unexpected patient-specific reactions (e.g., malignant hyperthermia), set idiosyncratic_reaction.flag true and copy the descriptors, otherwise leave the flag false with an empty list.\n"
-        "6. Populate the supporting_evidence list for each claim using snippet_id values from the listing (include pmid, article_title, key_points, and optional notes; leave the array empty when evidence is too weak).\n"
-        "7. Return JSON that matches the schema exactly; omit commentary.\n\n"
+        "3. Suppress any claim where the cited snippets only describe baseline properties of a drug (for example, malignant hyperthermia susceptibility) without linking the risk or benefit to the target condition; those belong in the out-of-scope set, not the output JSON.\n"
+        "4. Do not fabricate claims for drugs with insufficient evidence; it is acceptable for a drug to have zero claims.\n"
+        "5. Use the article_id identifiers we provide—cite an article once even if multiple snippets support it, never invent IDs, and flag unresolved citations in the claim summary if an article_id is missing.\n"
+        "6. Detect idiosyncratic reactions yourself; when evidence shows unexpected patient-specific reactions (e.g., malignant hyperthermia), set idiosyncratic_reaction.flag true and copy the descriptors, otherwise leave the flag false with an empty list.\n"
+        "7. Populate the supporting_evidence list for each claim using snippet_id values from the listing (include pmid, article_title, key_points, and optional notes; leave the array empty when evidence is too weak).\n"
+        "8. Return JSON that matches the schema exactly; omit commentary.\n\n"
     )
 
     context_block = (

@@ -69,6 +69,8 @@ def persist_processed_claims(
     mesh_signature: str,
     condition_label: str,
     llm_payloads: Sequence[object],
+    search_result_signature: str | None = None,
+    search_result_refreshed_at: datetime | None = None,
 ) -> ProcessedClaimSet:
     aggregated, warnings = _aggregate_claims(llm_payloads)
 
@@ -108,6 +110,17 @@ def persist_processed_claims(
     if warnings:
         pipeline_metadata["warning_count"] = len(warnings)
         pipeline_metadata["warnings"] = warnings
+
+    search_metadata: dict[str, object] = {}
+    if search_result_signature:
+        search_metadata["signature"] = search_result_signature
+    if search_result_refreshed_at is not None:
+        refreshed = search_result_refreshed_at
+        if refreshed.tzinfo is None:
+            refreshed = refreshed.replace(tzinfo=timezone.utc)
+        search_metadata["refreshed_at"] = refreshed.isoformat()
+    if search_metadata:
+        pipeline_metadata["search_result"] = search_metadata
 
     new_version = ProcessedClaimSetVersion(
         claim_set=claim_set,
@@ -280,7 +293,10 @@ def _aggregate_claims(
         data = _coerce_payload(payload)
         if not data:
             continue
-        drug_catalog, claim_to_drugs = _build_drug_catalog(data.get("drugs"))
+        drug_catalog, claim_to_drugs = _build_drug_catalog(
+            data.get("drugs"),
+            warnings=warnings,
+        )
         declared_claim_ids = set(claim_to_drugs.keys())
         claims = data.get("claims") or []
         for claim in claims:
@@ -320,6 +336,8 @@ def _aggregate_claims(
                 claim.get("drugs"),
                 claim.get("drug_classes"),
                 drug_catalog=drug_catalog,
+                claim_id=claim_id,
+                warnings=warnings,
             )
             if not drugs:
                 raise InvalidClaimPayload("LLM claim payload did not resolve any drug terms")
@@ -439,6 +457,8 @@ def _aggregate_claims(
                     "LLM claim payload did not include any linked articles"
                 )
             for article_id, pmid in linked_articles:
+                if pmid and _pmid_already_referenced(aggregated_claim.evidence.values(), pmid):
+                    continue
                 if article_id not in aggregated_claim.evidence:
                     aggregated_claim.evidence[article_id] = _AggregatedEvidence(
                         snippet_id=article_id,
@@ -480,6 +500,17 @@ def _merge_evidence(
             seen.add(point)
     if existing.notes is None:
         existing.notes = _clean_str(raw_evidence.get("notes"))
+
+
+def _pmid_already_referenced(evidence_entries: Iterable[_AggregatedEvidence], pmid: str) -> bool:
+    reference = pmid.strip()
+    if not reference:
+        return False
+    for entry in evidence_entries:
+        candidate = (entry.pmid or "").strip()
+        if candidate and candidate == reference:
+            return True
+    return False
 
 
 def _parse_severe_reaction(value: dict) -> tuple[bool, list[str]]:
@@ -563,6 +594,17 @@ def _unique_terms(terms: Iterable[str]) -> list[str]:
     return list(seen.values())
 
 
+def _humanize_drug_identifier(identifier: str) -> str:
+    token = identifier.split(":", 1)[-1]
+    token = token.replace("_", " ")
+    token = token.replace("-", " ")
+    token = token.strip()
+    if not token:
+        return identifier
+    normalized = " ".join(token.split())
+    return normalized.title()
+
+
 def _build_claim_key(classification: str, drugs: list[str], drug_classes: list[str]) -> str:
     drugs_key = ",".join(sorted(_normalize_term_key(term) for term in drugs))
     classes_key = ",".join(sorted(_normalize_term_key(term) for term in drug_classes))
@@ -616,6 +658,8 @@ def _normalise_claim_terms(
     drug_classes: Iterable[str] | None,
     *,
     drug_catalog: dict[str, _DrugCatalogEntry] | None = None,
+    claim_id: str | None = None,
+    warnings: list[dict[str, str]] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     if isinstance(drugs, (str, bytes)):
         raise InvalidClaimPayload("LLM claim payload claim.drugs must be an array of canonical ids")
@@ -651,12 +695,19 @@ def _normalise_claim_terms(
             raise InvalidClaimPayload(
                 "LLM claim payload claim.drugs must use canonical 'drug:' identifiers"
             )
-        if drug_catalog is None:
-            raise InvalidClaimPayload("LLM payload missing required field 'drugs'")
-        entry = drug_catalog.get(cleaned)
+        entry = drug_catalog.get(cleaned) if drug_catalog else None
+        canonical_ids.append(entry.drug_id if entry is not None else cleaned)
         if entry is None:
-            raise InvalidClaimPayload(f"Claim references unknown drug id '{cleaned}'")
-        canonical_ids.append(entry.drug_id)
+            if warnings is not None:
+                warning: dict[str, str] = {
+                    "code": "claim-unknown-drug-identifier",
+                    "drug_id": cleaned,
+                }
+                if claim_id:
+                    warning["claim_id"] = claim_id
+                warnings.append(warning)
+            drug_terms.append(_humanize_drug_identifier(cleaned))
+            continue
         if entry.name:
             drug_terms.append(entry.name)
         class_terms.extend(entry.classes)
@@ -677,22 +728,34 @@ def _normalise_claim_terms(
     return _unique_terms(drug_terms), class_terms, unique_canonical
 
 
-def _build_drug_catalog(entries: object) -> tuple[dict[str, _DrugCatalogEntry], dict[str, set[str]]]:
+def _build_drug_catalog(
+    entries: object,
+    *,
+    warnings: list[dict[str, str]] | None = None,
+) -> tuple[dict[str, _DrugCatalogEntry], dict[str, set[str]]]:
     catalog: dict[str, _DrugCatalogEntry] = {}
     claim_to_drugs: dict[str, set[str]] = {}
     if entries is None:
-        raise InvalidClaimPayload("LLM payload missing required field 'drugs'")
+        if warnings is not None:
+            warnings.append({"code": "missing-drug-catalog"})
+        return catalog, claim_to_drugs
 
     if isinstance(entries, (str, bytes)):
-        raise InvalidClaimPayload("LLM payload drugs must be an array of objects")
+        if warnings is not None:
+            warnings.append({"code": "invalid-drug-catalog", "reason": "non-array"})
+        return catalog, claim_to_drugs
 
     try:
         entries_list = list(entries)
     except TypeError as exc:
-        raise InvalidClaimPayload("LLM payload drugs must be an array of objects") from exc
+        if warnings is not None:
+            warnings.append({"code": "invalid-drug-catalog", "reason": "non-iterable"})
+        return catalog, claim_to_drugs
 
     if not entries_list:
-        raise InvalidClaimPayload("Drugs array must contain at least one entry")
+        if warnings is not None:
+            warnings.append({"code": "empty-drug-catalog"})
+        return catalog, claim_to_drugs
 
     for item in entries_list:
         if not isinstance(item, dict):

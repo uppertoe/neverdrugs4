@@ -1,0 +1,159 @@
+{% set job_id = job.job_id if job else None %}
+{% set details = job.details if job and job.details else {} %}
+{% set status = job.status if job else None %}
+{% set status_text = status|default('queued') %}
+{% set status_label = status_text.replace('_', ' ').title() %}
+{% set stage = job.stage if job else None %}
+{% set stage_label = stage.replace('_', ' ').title() if stage else None %}
+{% set provided_terminal_statuses = terminal_statuses if terminal_statuses is defined else ['completed', 'failed', 'empty-results', 'no-batches', 'no-responses', 'skipped'] %}
+{% set pipeline_outline = pipeline_outline if pipeline_outline is defined else [] %}
+{% set resolved_mesh_terms = resolved_mesh_terms if resolved_mesh_terms is defined else [] %}
+{% set should_poll = job_id and status_text not in provided_terminal_statuses %}
+{% set badge_variants = {
+  'completed': 'success',
+  'empty-results': 'warning',
+  'failed': 'danger',
+  'no-batches': 'warning',
+  'no-responses': 'warning',
+  'skipped': 'secondary'
+} %}
+{% set badge_variant = badge_variants.get(status_text, 'primary') %}
+{% if notice and notice_variant == 'danger' %}
+<div id="toast-container" class="toast-container position-fixed top-0 end-0 p-3" hx-swap-oob="true">
+  <div class="toast align-items-center text-bg-danger border-0 show" role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="d-flex">
+      <div class="toast-body">
+        Request failed: {{ notice }}
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+</div>
+{% endif %}
+<div
+  id="job-status-panel"
+  class="card shadow-sm"
+  {% if should_poll %}
+  hx-get="{{ url_for('ui.status', job_ref=job_id) }}"
+  hx-trigger="load delay:1s, every 3s"
+  hx-vals='{"condition": {{ condition|tojson }} }'
+  hx-target="#job-status-panel"
+  hx-swap="outerHTML"
+  {% endif %}
+>
+  <div class="card-body">
+    <h2 class="h5 mb-3">Refresh status for {{ condition }}</h2>
+    {% if resolved_mesh_terms %}
+    <p class="text-muted small mb-3">
+      Using MeSH term{% if resolved_mesh_terms|length != 1 %}s{% endif %}:
+      {% for term in resolved_mesh_terms %}
+      <span class="badge text-bg-light text-dark border">{{ term }}</span>
+      {% endfor %}
+    </p>
+    {% endif %}
+    {% if notice %}
+    <div class="alert alert-{{ notice_variant|default('info') }}" role="alert">
+      {{ notice }}
+    </div>
+    {% endif %}
+    {% if job %}
+    <div class="d-flex align-items-center gap-2 mb-2">
+  <span class="badge bg-{{ badge_variant }} text-uppercase">{{ status_label }}</span>
+  {% if stage_label %}
+  <span class="text-muted small">Stage: {{ stage_label }}</span>
+      {% endif %}
+    </div>
+    {% set message = job.summary if job and job.summary else None %}
+    {% if not message %}
+      {% set message = details.get('description') or details.get('details') %}
+    {% endif %}
+    {% if message %}
+    <p class="mb-0">{{ message }}</p>
+    {% else %}
+    <p class="text-muted mb-0">We are preparing this request. Please keep this window open while we work.</p>
+    {% endif %}
+    {% if details.get('error') %}
+    <p class="text-danger mt-2 mb-0">{{ details.get('error') }}</p>
+    {% endif %}
+    {% if pipeline_outline %}
+    <ul class="list-unstyled small mt-3 mb-0">
+      {% for step in pipeline_outline %}
+      <li class="d-flex align-items-start gap-2 mb-2">
+        {% if step.state == 'completed' %}
+        <span class="badge text-bg-success">Done</span>
+        {% elif step.state == 'current' %}
+        <span class="badge text-bg-primary">Now</span>
+        {% else %}
+        <span class="badge text-bg-secondary">Next</span>
+        {% endif %}
+        <div>
+          <div class="fw-semibold">{{ step.label }}</div>
+          <div class="text-muted">{{ step.description }}</div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  {% if job.stage == 'generating_claims' %}
+  {% set batch_details = job.details or {} %}
+    {% set batch_count = batch_details.get('batch_count') %}
+    {% if batch_count %}
+    {% set batches_completed = batch_details.get('batches_completed', 0) %}
+    {% set estimated_remaining_seconds = batch_details.get('estimated_remaining_seconds') %}
+    {% set estimated_total_seconds = batch_details.get('estimated_total_seconds') %}
+    {% set estimated_total_tokens = batch_details.get('estimated_total_tokens') %}
+    {% set progress_percent = (batches_completed / batch_count * 100) if batch_count else 0 %}
+    <div class="alert alert-info mt-3" role="alert">
+      Processing {{ batch_count }} LLM batch{% if batch_count != 1 %}es{% endif %}. {% if batches_completed %}{{ batches_completed }} complete.{% else %}Waiting on first batch.{% endif %}
+      {% if estimated_remaining_seconds is not none %}
+      {% set remaining_minutes = (estimated_remaining_seconds + 59) // 60 %}
+      Approximately {{ remaining_minutes }} minute{% if remaining_minutes != 1 %}s{% endif %} remaining.
+      {% endif %}
+    </div>
+    <div class="progress mt-2" style="height: 0.75rem;">
+      <div class="progress-bar" role="progressbar" style="width: {{ progress_percent|round(0, 'floor') }}%;" aria-valuenow="{{ progress_percent|round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100"></div>
+    </div>
+    <ul class="small text-muted mt-2 mb-0">
+      <li>Average per batch ≈ {{ "{:,}".format(batch_details.get('average_batch_tokens', 30000)) }} tokens ({{ batch_details.get('average_batch_seconds', 150) }} s)</li>
+      {% if estimated_total_tokens %}
+      <li>Total payload ≈ {{ "{:,}".format(estimated_total_tokens) }} tokens across {{ batch_count }} batch{% if batch_count != 1 %}es{% endif %}.</li>
+      {% endif %}
+      {% if estimated_total_seconds %}
+      {% set total_minutes = (estimated_total_seconds + 59) // 60 %}
+      <li>Estimated total LLM time ≈ {{ total_minutes }} minute{% if total_minutes != 1 %}s{% endif %}.</li>
+      {% endif %}
+    </ul>
+    {% endif %}
+    {% endif %}
+    {% if not should_poll and status %}
+    <p class="text-muted small mt-3 mb-0">No further updates will be requested automatically.</p>
+    {% endif %}
+    {% if job.created_at or job.updated_at %}
+    <dl class="row small text-muted mt-3 mb-0">
+      {% if job.created_at %}
+      <dt class="col-sm-4">Started</dt>
+      <dd class="col-sm-8">{{ job.created_at.strftime('%Y-%m-%d %H:%M %Z') }}</dd>
+      {% endif %}
+      {% if job.updated_at %}
+      <dt class="col-sm-4">Last updated</dt>
+      <dd class="col-sm-8">{{ job.updated_at.strftime('%Y-%m-%d %H:%M %Z') }}</dd>
+      {% endif %}
+    </dl>
+    {% endif %}
+    {% if can_retry and job_id %}
+    <div class="mt-3">
+      <button
+        type="button"
+        class="btn btn-outline-primary"
+        hx-post="{{ url_for('ui.retry', job_ref=job_id) }}"
+        hx-target="#job-status-panel"
+        hx-select="#job-status-panel"
+        hx-swap="outerHTML"
+      >Retry search</button>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="text-muted mb-0">We are preparing a refresh for this condition. Results will appear here once ready.</p>
+    {% endif %}
+  </div>
+</div>

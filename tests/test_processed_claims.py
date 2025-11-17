@@ -206,12 +206,9 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
     assert stored_claim.down_votes == 0
 
     evidence_ids = {entry.snippet_id for entry in stored_claim.evidence}
-    assert evidence_ids == {str(snippet_one.id), str(snippet_two.id), "article:11111111"}
+    assert evidence_ids == {str(snippet_one.id), str(snippet_two.id)}
     for entry in stored_claim.evidence:
-        if entry.snippet_id.isdigit():
-            assert entry.citation_url == article.citation["preferred_url"]
-        else:
-            assert entry.citation_url == "https://pubmed.ncbi.nlm.nih.gov/11111111/"
+        assert entry.citation_url == article.citation["preferred_url"]
 
     links = session.query(ProcessedClaimDrugLink).order_by(ProcessedClaimDrugLink.id).all()
     terms = {(link.term, link.term_kind) for link in links}
@@ -220,6 +217,33 @@ def test_persist_processed_claims_merges_and_indexes(session) -> None:
         ("depolarising neuromuscular blocker", "drug_class"),
     }
     assert {link.claim_id for link in links} == {stored_claim.id}
+
+
+def test_persist_processed_claims_includes_article_only_reference_when_needed(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="11111111")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload["claims"][0]["articles"].append("article:22222222")
+
+    claim_set = _persist_payloads(
+        session,
+        mesh_signature=mesh_signature,
+        term=term,
+        payloads=[payload],
+    )
+
+    stored_set = session.get(ProcessedClaimSet, claim_set.id)
+    assert stored_set is not None
+    active_version = stored_set.get_active_version()
+    assert active_version is not None
+    stored_claim = active_version.claims[0]
+
+    evidence_by_id = {entry.snippet_id: entry for entry in stored_claim.evidence}
+    assert set(evidence_by_id) == {str(snippet_one.id), "article:22222222"}
+    assert evidence_by_id[str(snippet_one.id)].citation_url == article.citation["preferred_url"]
+    assert evidence_by_id["article:22222222"].citation_url == "https://pubmed.ncbi.nlm.nih.gov/22222222/"
 
 
 def test_persist_processed_claims_creates_new_version_and_supersedes_previous(session) -> None:
@@ -375,7 +399,7 @@ def test_persist_processed_claims_carries_vote_totals(session) -> None:
     assert new_claim.down_votes == 2
 
 
-def test_persist_processed_claims_rejects_empty_drug_array(session) -> None:
+def test_persist_processed_claims_warns_on_empty_drug_array(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="33333333")
@@ -383,8 +407,40 @@ def test_persist_processed_claims_rejects_empty_drug_array(session) -> None:
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["drugs"] = []
 
-    with pytest.raises(InvalidClaimPayload, match="Drugs array must contain at least one entry"):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    claim_set = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    warnings = active_version.pipeline_metadata.get("warnings", [])
+    codes = {entry.get("code") for entry in warnings}
+    assert "empty-drug-catalog" in codes
+    assert "claim-unknown-drug-identifier" in codes
+
+
+def test_persist_processed_claims_warns_when_drug_catalog_missing(session) -> None:
+    mesh_signature = "king-denborough|anesthesia"
+    term, _ = _seed_search_term(session, mesh_signature)
+    article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="33333334")
+
+    payload = _single_claim_payload(article=article, snippet=snippet_one)
+    payload.pop("drugs")
+
+    claim_set = _persist_payloads(
+        session,
+        mesh_signature=mesh_signature,
+        term=term,
+        payloads=[payload],
+    )
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    stored_claim = active_version.claims[0]
+    assert stored_claim.drugs == ["Succinylcholine"]
+
+    metadata = active_version.pipeline_metadata
+    warnings = metadata.get("warnings", [])
+    codes = {entry.get("code") for entry in warnings}
+    assert {"missing-drug-catalog", "claim-unknown-drug-identifier"}.issubset(codes)
 
 
 def test_persist_processed_claims_rejects_missing_claim_id(session) -> None:
@@ -767,7 +823,7 @@ def test_persist_processed_claims_rejects_articles_with_non_numeric_suffix(sessi
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
 
-def test_persist_processed_claims_rejects_unknown_drug_reference(session) -> None:
+def test_persist_processed_claims_warns_on_unknown_drug_reference(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="88888888")
@@ -775,11 +831,15 @@ def test_persist_processed_claims_rejects_unknown_drug_reference(session) -> Non
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["claims"][0]["drugs"] = ["drug:unknown"]
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="Claim references unknown drug id 'drug:unknown'",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    claim_set = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    stored_claim = active_version.claims[0]
+    assert stored_claim.drugs == ["Unknown"]
+
+    codes = {entry.get("code") for entry in active_version.pipeline_metadata.get("warnings", [])}
+    assert "claim-unknown-drug-identifier" in codes
 
 
 def test_persist_processed_claims_rejects_scalar_claim_drugs(session) -> None:
@@ -921,7 +981,7 @@ def test_persist_processed_claims_warns_when_claim_references_undeclared_drug(se
     assert set(persisted_claim.drugs) == {"Succinylcholine", "Sevoflurane"}
 
 
-def test_persist_processed_claims_rejects_scalar_drug_catalog_entries(session) -> None:
+def test_persist_processed_claims_warns_on_scalar_drug_catalog_entries(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="20202021")
@@ -929,11 +989,14 @@ def test_persist_processed_claims_rejects_scalar_drug_catalog_entries(session) -
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["drugs"] = "not-a-list"
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="LLM payload drugs must be an array of objects",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    claim_set = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    warnings = active_version.pipeline_metadata.get("warnings", [])
+    warning_entries = [entry for entry in warnings if entry.get("code") == "invalid-drug-catalog"]
+    assert warning_entries
+    assert any(entry.get("reason") == "non-array" for entry in warning_entries)
 
 
 def test_persist_processed_claims_rejects_nonobject_drug_entry(session) -> None:
@@ -1056,7 +1119,7 @@ def test_persist_processed_claims_rejects_drug_entry_noncanonical_claim_id(sessi
         _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
 
 
-def test_persist_processed_claims_rejects_missing_top_level_drugs(session) -> None:
+def test_persist_processed_claims_warns_when_top_level_drugs_missing(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="21212121")
@@ -1064,14 +1127,15 @@ def test_persist_processed_claims_rejects_missing_top_level_drugs(session) -> No
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload.pop("drugs")
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="LLM payload missing required field 'drugs'",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    claim_set = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    codes = {entry.get("code") for entry in active_version.pipeline_metadata.get("warnings", [])}
+    assert "missing-drug-catalog" in codes
 
 
-def test_persist_processed_claims_rejects_top_level_drugs_none(session) -> None:
+def test_persist_processed_claims_warns_when_top_level_drugs_none(session) -> None:
     mesh_signature = "king-denborough|anesthesia"
     term, _ = _seed_search_term(session, mesh_signature)
     article, snippet_one, _ = _seed_article_with_snippets(session, term, pmid="21212122")
@@ -1079,11 +1143,12 @@ def test_persist_processed_claims_rejects_top_level_drugs_none(session) -> None:
     payload = _single_claim_payload(article=article, snippet=snippet_one)
     payload["drugs"] = None
 
-    with pytest.raises(
-        InvalidClaimPayload,
-        match="LLM payload missing required field 'drugs'",
-    ):
-        _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+    claim_set = _persist_payloads(session, mesh_signature=mesh_signature, term=term, payloads=[payload])
+
+    active_version = claim_set.get_active_version()
+    assert active_version is not None
+    codes = {entry.get("code") for entry in active_version.pipeline_metadata.get("warnings", [])}
+    assert "missing-drug-catalog" in codes
 
 
 def test_persist_processed_claims_rejects_none_payload(session) -> None:
@@ -1124,7 +1189,7 @@ def test_persist_processed_claims_rejects_parsed_json_exception(session) -> None
 
     with pytest.raises(
         InvalidClaimPayload,
-        match="LLM payload parsed_json\(\) failed",
+        match=r"LLM payload parsed_json\(\) failed",
     ):
         _persist_payloads(
             session,
@@ -1140,7 +1205,7 @@ def test_persist_processed_claims_rejects_parsed_json_non_mapping(session) -> No
 
     with pytest.raises(
         InvalidClaimPayload,
-        match="LLM payload parsed_json\(\) must return a JSON object",
+        match=r"LLM payload parsed_json\(\) must return a JSON object",
     ):
         _persist_payloads(
             session,

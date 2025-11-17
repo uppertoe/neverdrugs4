@@ -1,0 +1,18 @@
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h5 mb-3">Select MeSH term</h2>
+    <p class="text-muted">We found multiple matching descriptors for "{{ condition }}". Please choose the best fit.</p>
+    <form hx-post="/ui/mesh-select" hx-target="#results" hx-swap="innerHTML" class="vstack gap-2">
+      {% for option in preview.ranked_options %}
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="mesh_term" id="mesh-option-{{ loop.index }}" value="{{ option }}" {% if loop.first %}checked{% endif %}>
+        <label class="form-check-label" for="mesh-option-{{ loop.index }}">{{ option }}</label>
+      </div>
+      {% endfor %}
+      <input type="hidden" name="condition" value="{{ condition }}">
+      <div class="d-flex justify-content-end gap-2 pt-2">
+        <button type="submit" class="btn btn-primary">Confirm selection</button>
+      </div>
+    </form>
+  </div>
+</div>

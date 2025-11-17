@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Mapping, Optional
 
-from flask import Flask, jsonify, g
+from flask import Flask, Response, jsonify, g, redirect, url_for
 from sqlalchemy.orm import Session
 
 from app.api import api_blueprint
@@ -10,6 +10,7 @@ from app.database import create_session_factory
 from app.job_queue import configure_claim_refresh_enqueuer
 from app.settings import DEFAULT_SEARCH_REFRESH_TTL_SECONDS, load_settings
 from app.tasks import refresh_claims_for_condition_task
+from app.ui import ui_blueprint
 
 SessionFactory = Callable[[], Session]
 
@@ -78,7 +79,12 @@ def create_app(
         # Basic readiness probe for infrastructure tests
         return jsonify(status="ok"), 200
 
+    @app.get("/")
+    def root_redirect() -> Response:
+        return redirect(url_for("ui.index"))
+
     app.register_blueprint(api_blueprint)
+    app.register_blueprint(ui_blueprint)
     configure_claim_refresh_enqueuer(_enqueue_refresh_via_celery)
 
     return app

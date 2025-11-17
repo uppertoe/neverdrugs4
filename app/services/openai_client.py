@@ -5,7 +5,7 @@ import os
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from dotenv import load_dotenv
 
@@ -137,11 +137,19 @@ class OpenAIChatClient:
         batches: Sequence[LLMRequestBatch],
         *,
         model: str | None = None,
+    progress_callback: Callable[[int, int, LLMRequestBatch], None] | None = None,
     ) -> list[LLMCompletionResult]:
         results: list[LLMCompletionResult] = []
         target_model = model or self.model
-        for batch in batches:
-            results.append(self._invoke_batch(batch, target_model))
+        total = len(batches)
+        for index, batch in enumerate(batches, start=1):
+            result = self._invoke_batch(batch, target_model)
+            results.append(result)
+            if progress_callback is not None:
+                try:
+                    progress_callback(index, total, batch)
+                except Exception:  # pragma: no cover - defensive against callback failures
+                    pass
         return results
 
     def _invoke_batch(self, batch: LLMRequestBatch, model: str) -> LLMCompletionResult:
