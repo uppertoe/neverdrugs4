@@ -57,6 +57,11 @@ def create_app(
 
     secret_key = app.config.get("SECRET_KEY")
     if not secret_key:
+        env_secret_key = os.getenv("SECRET_KEY")
+        if env_secret_key:
+            secret_key = env_secret_key.strip()
+            app.config["SECRET_KEY"] = secret_key
+    if not secret_key:
         if is_dev_environment:
             app.config["SECRET_KEY"] = secrets.token_urlsafe(32)
             logger.warning("SECRET_KEY not provided; generated ephemeral key for development/testing")

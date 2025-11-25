@@ -10,17 +10,17 @@ Clinical evidence aggregation service that normalises NIH search terms, collects
 - **LLM Integration**: `OpenAIChatClient` streams batches to OpenAI Responses API (defaults to `gpt-5-mini`).
 
 ## Quick Start (Docker)
-1. Copy the example environment file and fill in real credentials:
+1. Copy the example environment file and fill in the namespaced secrets (values prefixed with `NEVERDRUGS4_`):
    ```sh
    cp .env.example .env
-   # edit .env to add real keys (SECRET_KEY must be a long random string in production)
+   # edit .env to add real keys (NEVERDRUGS4_SECRET_KEY must be a long random string in production)
    ```
 2. Build and launch the stack:
    ```sh
-   docker compose -f deployment/docker-compose.yml up --build
+   docker compose up --build
    ```
 3. The API listens on `http://localhost:8000`. The entrypoint runs `alembic upgrade head` before starting.
-4. Stop the stack with `docker compose -f deployment/docker-compose.yml down`. Add `--volumes` to wipe Postgres data.
+4. Stop the stack with `docker compose down`. Add `--volumes` to wipe Postgres data.
 
 ## Local Development Without Docker
 1. Create and activate a virtual environment for Python 3.11+.

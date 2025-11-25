@@ -1,68 +1,61 @@
 services:
-  web:
-    build:
-      context: .
-      dockerfile: deployment/docker/Dockerfile
+  neverdrugs4_web:
+    image: docker.io/uppertoe/neverdrugs4:latest
+    container_name: neverdrugs4_web
+    restart: unless-stopped
     command: ./deployment/docker/entrypoint.sh gunicorn --bind 0.0.0.0:8000 app.wsgi:app
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: "postgresql+psycopg2://postgres:postgres@postgres:5432/neverdrugs4"
-      REDIS_URL: "redis://redis:6379/0"
-      CELERY_BROKER_URL: "redis://redis:6379/0"
-      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      DATABASE_URL: "postgresql+psycopg2://postgres:postgres@neverdrugs4_postgres:5432/neverdrugs4"
+      REDIS_URL: "redis://neverdrugs4_redis:6379/0"
+      CELERY_BROKER_URL: "redis://neverdrugs4_redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://neverdrugs4_redis:6379/0"
       FLASK_ENV: "production"
       FLASK_DEBUG: "0"
       RUN_DB_MIGRATIONS: "1"
       OPENAI_API_KEY: "${NEVERDRUGS4_OPENAI_API_KEY:?Set NEVERDRUGS4_OPENAI_API_KEY in .env}"
-      NIH_API_KEY: "${NEVERDRUGS4_NIH_API_KEY:-}"
-      NIH_CONTACT_EMAIL: "${NEVERDRUGS4_NIH_CONTACT_EMAIL:-}"
       SECRET_KEY: "${NEVERDRUGS4_SECRET_KEY:?Set NEVERDRUGS4_SECRET_KEY in .env}"
-    volumes:
-      - ./:/usr/src/app
+      NIH_CONTACT_EMAIL: "${NEVERDRUGS4_NIH_CONTACT_EMAIL:-}"
+      NIH_API_KEY: "${NEVERDRUGS4_NIH_API_KEY:-}"
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
+      neverdrugs4_postgres:
         condition: service_healthy
-      redis:
+      neverdrugs4_redis:
         condition: service_healthy
 
-  worker:
-    build:
-      context: .
-      dockerfile: deployment/docker/Dockerfile
+  neverdrugs4_worker:
+    image: docker.io/uppertoe/neverdrugs4:latest
+    container_name: neverdrugs4_worker
+    restart: unless-stopped
     command: ./deployment/docker/entrypoint.sh celery -A app.celery_app.celery worker --loglevel=info
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: "postgresql+psycopg2://postgres:postgres@postgres:5432/neverdrugs4"
-      REDIS_URL: "redis://redis:6379/0"
-      CELERY_BROKER_URL: "redis://redis:6379/0"
-      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      DATABASE_URL: "postgresql+psycopg2://postgres:postgres@neverdrugs4_postgres:5432/neverdrugs4"
+      REDIS_URL: "redis://neverdrugs4_redis:6379/0"
+      CELERY_BROKER_URL: "redis://neverdrugs4_redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://neverdrugs4_redis:6379/0"
       RUN_DB_MIGRATIONS: "0"
       FLASK_ENV: "production"
       FLASK_DEBUG: "0"
       OPENAI_API_KEY: "${NEVERDRUGS4_OPENAI_API_KEY:?Set NEVERDRUGS4_OPENAI_API_KEY in .env}"
-      NIH_API_KEY: "${NEVERDRUGS4_NIH_API_KEY:-}"
-      NIH_CONTACT_EMAIL: "${NEVERDRUGS4_NIH_CONTACT_EMAIL:-}"
       SECRET_KEY: "${NEVERDRUGS4_SECRET_KEY:?Set NEVERDRUGS4_SECRET_KEY in .env}"
-    volumes:
-      - ./:/usr/src/app
+      NIH_CONTACT_EMAIL: "${NEVERDRUGS4_NIH_CONTACT_EMAIL:-}"
+      NIH_API_KEY: "${NEVERDRUGS4_NIH_API_KEY:-}"
     depends_on:
-      postgres:
+      neverdrugs4_postgres:
         condition: service_healthy
-      redis:
+      neverdrugs4_redis:
         condition: service_healthy
 
-  postgres:
+  neverdrugs4_postgres:
     image: postgres:18-alpine
+    container_name: neverdrugs4_postgres
     environment:
       POSTGRES_DB: neverdrugs4
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - neverdrugs4-postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -71,8 +64,9 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
+  neverdrugs4_redis:
     image: redis:8-alpine
+    container_name: neverdrugs4_redis
     command: redis-server --save "" --appendonly no
     ports:
       - "6379:6379"
@@ -83,4 +77,5 @@ services:
       retries: 5
 
 volumes:
-  postgres-data:
+  neverdrugs4-postgres-data:
+    name: neverdrugs4-postgres-data
